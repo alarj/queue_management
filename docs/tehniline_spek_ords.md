@@ -1,0 +1,799 @@
+# Tehniline spetsifikatsioon: Oracle’i ja ORDS-i põhine serveriülene tööjärjekord
+
+## 1. Dokumendi päritolu
+
+Koostaja: AI (OpenAI Codex) kasutajaga 2.11.2026 peetud arhitektuuriarutelu, faili [`lahteylesanne.md`](lahteylesanne.md), kõrvale heidetud Jenkinsi variandi [`tehniline_spek.md`](tehniline_spek.md), `fun_o` projekti kontrollitud ORDS-teostuse ning Oracle Autonomous Database’is kasutaja tehtud tehniliste katsete põhjal.
+
+Dokument kirjeldab valitud Oracle’i ja ORDS-i põhist lahendust. MVP1 kasutab perioodilist polling’ut; Oracle’i algatatud wakeup on säilitatud tulevase MVPx laiendusena. Dokument ei anna luba luua Oracle’i kasutajaid või objekte, muuta nginx-serverit, rakendusi või andmeid ega käivitada andmeid muutvaid teste.
+
+## 2. Sisukord
+
+- [3. Dokumendi roll ja staatus](#3-dokumendi-roll-ja-staatus)
+- [4. Probleem ja eesmärk](#4-probleem-ja-eesmärk)
+- [5. Tehnilise teostatavuse kontrollitud tulemused](#5-tehnilise-teostatavuse-kontrollitud-tulemused)
+- [6. Arhitektuuri ülevaade](#6-arhitektuuri-ülevaade)
+- [7. Komponendid ja vastutused](#7-komponendid-ja-vastutused)
+- [8. Tõeallikad ja vastutuse piirid](#8-tõeallikad-ja-vastutuse-piirid)
+- [9. Rakendusepõhine worker ja tööadapter](#9-rakendusepõhine-worker-ja-tööadapter)
+- [10. Töö esitamine](#10-töö-esitamine)
+- [11. Järjekord ja ühe raske töö piirang](#11-järjekord-ja-ühe-raske-töö-piirang)
+- [12. Töö võtmine ja täitmise token](#12-töö-võtmine-ja-täitmise-token)
+- [13. Tulevane MVPx wakeup-laiendus](#13-tulevane-mvpx-wakeup-laiendus)
+- [14. MVP1 polling](#14-mvp1-polling)
+- [15. Heartbeat ja protsessi tegelik olek](#15-heartbeat-ja-protsessi-tegelik-olek)
+- [16. Ubuntu restart ja boot ID](#16-ubuntu-restart-ja-boot-id)
+- [17. Olekumudel](#17-olekumudel)
+- [18. Järjekorra haldustoimingud](#18-järjekorra-haldustoimingud)
+- [19. Esimese versiooni ulatusest väljas](#19-esimese-versiooni-ulatusest-väljas)
+- [20. Oracle’i loogiline andmemudel](#20-oraclei-loogiline-andmemudel)
+- [21. ORDS-i esialgne API](#21-ordsi-esialgne-api)
+- [22. Autentimine ja õigused](#22-autentimine-ja-õigused)
+- [23. Kasutajaliides](#23-kasutajaliides)
+- [24. Võrk ja turvalisus](#24-võrk-ja-turvalisus)
+- [25. Tõrkeolukorrad ja taastamine](#25-tõrkeolukorrad-ja-taastamine)
+- [26. Logid, tööfailid ja jälgitavus](#26-logid-tööfailid-ja-jälgitavus)
+- [27. Testimine](#27-testimine)
+- [28. Teostusetapid](#28-teostusetapid)
+- [29. Avatud otsused](#29-avatud-otsused)
+- [30. Viited](#30-viited)
+
+## 3. Dokumendi roll ja staatus
+
+Käesolev dokument kirjeldab kinnitatud lahendust, milles:
+
+- Jenkinsit ei kasutata;
+- Oracle on ühise järjekorra ja selle ärireeglite autoriteetne tõeallikas;
+- ORDS on rakenduste ja Oracle’i vaheline HTTPS-liides;
+- MVP1 tööde käivitamise algatab rakendusepõhise workeri perioodiline ORDS claim;
+- Oracle `DBMS_SCHEDULER` ja `UTL_HTTP` wakeup-teavitus jääb tulevaseks MVPx laienduseks;
+- tegelikud pikad tööd käivitatakse Ubuntu serveris rakendusepõhise workeri ja registreeritud adapteri kaudu.
+
+Dokument ei lahenda ühegi liidestatava rakenduse sisemist funktsionaalsust ega otsusta, millised selle rakenduse protsessid ühisesse järjekorda saadetakse. Selle otsuse teeb iga rakendus ise.
+
+[`tehniline_spek.md`](tehniline_spek.md) kirjeldab varasemat Jenkinsi-põhist varianti, mis on kõrvale heidetud ja säilib võrdlus- ning ajaloomaterjalina.
+
+## 4. Probleem ja eesmärk
+
+Mitme rakenduse pikad CPU-, mälu- või kettamahukad protsessid töötavad samal piiratud ressursiga Ubuntu serveril. Rakenduste eraldi sisemised järjekorrad ei takista eri rakenduste raskete tööde samaaegset käivitumist.
+
+Lahenduse eesmärk on:
+
+1. hoida rakendusteülest järjekorda olemasolevas Oracle’i andmebaasis;
+2. jõustada esialgu üks samaaegne raske töö;
+3. lubada rakendustel esitada töid ja workeritel võtta töid ORDS-i kaudu;
+4. käivitada MVP1-s tööd rakendusepõhiste workerite mõõduka perioodilise pollingu kaudu;
+5. taastada ohutu olek pärast Ubuntu, workeri, ORDS-i või andmebaasi restarti;
+6. säilitada minimalistlik keskne haldusliides;
+7. mitte lisada uut andmebaasi, brokerit ega Jenkinsi teenust.
+
+## 5. Tehnilise teostatavuse kontrollitud tulemused
+
+Kasutaja tegi 2.11.2026 Oracle SQL Developeris `ADMIN` kasutajaga järgmised kontrollid:
+
+- teenus on Autonomous OLTP;
+- andmebaas on Oracle AI Database 26ai, versioon `23.26.4.1.0`;
+- paketid `DBMS_NETWORK_ACL_ADMIN`, `DBMS_SCHEDULER` ja `UTL_HTTP` on olemas ning olekus `VALID`;
+- `ADMIN` kasutajal on `CREATE JOB` ja `MANAGE SCHEDULER`;
+- hostile `fun-o.eu` lisati `http` võrguõigus;
+- otsene `UTL_HTTP` HTTPS `HEAD` päring aadressile `https://fun-o.eu/` tagastas `200 OK`;
+- ühekordne `DBMS_SCHEDULER` job `WAKEUP_HTTPS_POC_20261102` lõpetas olekuga `SUCCEEDED` ja veakoodiga `0`.
+
+Katse tõendab tulevase MVPx wakeup-laienduse jaoks järgmise ahela tehnilist toimimist:
+
+```text
+Oracle DBMS_SCHEDULER
+        │
+        ▼
+PL/SQL + UTL_HTTP
+        │ HTTPS
+        ▼
+fun-o.eu nginx Ubuntu serveris
+```
+
+Katse ei ole MVP1 eeltingimus ega tõenda veel:
+
+- tootmisskeemi õigusi;
+- tegeliku wakeup-endpoint’i lepingut ega autentimist;
+- `POST`-teavituse vastuvõttu rakenduse workeris;
+- ebaõnnestunud wakeup’i korduskatseid;
+- terviklikku tööde esitamise, reserveerimise ja lõpetamise voogu.
+
+`ADMIN` kasutajat ei kasutata tootmisrakenduse runtime-kasutajana.
+
+## 6. Arhitektuuri ülevaade
+
+```text
+Google’i kasutaja
+        │
+        ▼
+haldus.fun-o.eu ─► nginx ─► haldusveeb ja autentimise backend
+                                      │
+                                      ▼
+                              ORDS haldusendpoint’id
+                                      │
+                                      ▼
+                            Oracle’i järjekorrapaketid
+
+Rakendus A ──► ORDS töö esitamine ────┤
+Rakendus B ──► ORDS töö esitamine ────┤
+                                      │
+                                      ▼
+                         Oracle’i autoriteetne järjekord
+                   ▲                                     ▲
+                   │ ORDS claim iga 5 minuti järel       │ ORDS claim iga 5 minuti järel
+                   │                                     │
+       Rakenduse A worker                     Rakenduse B worker
+                   │                                     │
+                   ▼                                     ▼
+          registreeritud adapter                registreeritud adapter
+                   │                                     │
+                   ▼                                     ▼
+          tegelik pikk protsess                tegelik pikk protsess
+```
+
+Worker ei saa töö käivitamise otsust lokaalselt teha. Perioodiline päring on atomaarne claim: Oracle kontrollib järjekorra esimest tööd ja globaalset täitmiskohta ning tagastab töö ainult sobivale workerile.
+
+## 7. Komponendid ja vastutused
+
+### 7.1. Oracle’i rakendusskeem
+
+Vastutab:
+
+- tööde püsiva identiteedi ja oleku eest;
+- autoriteetse järjekorra järjestuse eest;
+- idempotentsuse eest;
+- ühe raske töö piirangu eest;
+- töö atomaarse reserveerimise eest;
+- täitmise tokenite eest;
+- hosti, workeri, heartbeat’i ja `boot_id` metaandmete eest;
+- tehnilise sündmusajaloo eest.
+
+Tootmisskeemi nimi ja otsus ühe või kahe skeemi kasutamise kohta ei ole veel kinnitatud.
+
+### 7.2. ORDS
+
+Vastutab:
+
+- kaitstud REST-endpoint’ide avaldamise eest;
+- server-server autentimise ja autoriseerimise eest;
+- valideeritud sisendi edastamise eest Oracle’i pakettidele;
+- minimaalsete vastuste tagastamise eest.
+
+ORDS ei käivita Ubuntu protsessi ega ole järjekorra teine koopia.
+
+### 7.3. Tulevase MVPx `DBMS_SCHEDULER`
+
+`DBMS_SCHEDULER` ei osale MVP1 tööde käivitamises. Tulevases MVPx wakeup-laienduses võib see vastutada Oracle’i sees ootel wakeup-teavituste asünkroonse saatmise ja kordamise eest.
+
+`DBMS_SCHEDULER` ei käivita Autonomous Database’ist Ubuntu transkribeerimis- või diariseerimisprotsessi. Ta saadab ainult HTTPS-teavituse.
+
+### 7.4. Tulevase MVPx rakenduse wakeup-endpoint
+
+Vastutab:
+
+- Oracle’i saadetud teavituse autentimise eest;
+- teavituse unikaalse ID korduskindla vastuvõtu eest;
+- sama rakenduse kohaliku workeri äratamise eest.
+
+MVP1-s wakeup-endpoint’e ega nende URL-e ei looda. Tulevases MVPx laienduses on igal liidestatud rakendusel enda wakeup-endpoint ja selle täpne HTTPS URL registreeritakse Oracle’is sama rakenduse kirjes. Keskset rakendusteülest wakeup-vastuvõtjat ei kavandata.
+
+Endpoint’i domeeni, nginx-marsruudi, workeri ja kohaliku äratamise viisi teostab vastava rakenduse projekt. Keskne haldur määrab ainult liidese lepingu ja saadab teavituse registreeritud URL-ile.
+
+Wakeup-endpoint ei võta vastu shellikäsku, adapteri käsku ega usalda teavituses olevat väidet, et töö võib käivituda.
+
+### 7.5. Rakendusepõhine worker
+
+Vastutab:
+
+- oma rakenduse registreeritud töötüüpide teenindamise eest;
+- ORDS-ist töö küsimise ja reserveerimise eest;
+- rakenduse adapteri käivitamise eest;
+- protsessi jälgimise eest;
+- heartbeat’i, tulemuse ja lõppoleku teatamise eest;
+- sama buudi sees eelmise protsessi olemasolu kontrollimise eest.
+
+### 7.6. Tööadapter
+
+Adapter on rakenduse ja töötüübi leping. See määrab:
+
+- lubatud parameetrid;
+- tegeliku käivitusviisi;
+- töö runtime-kataloogi ja väljundiviited;
+- protsessi lõppoleku tuvastamise;
+- logi asukoha.
+
+## 8. Tõeallikad ja vastutuse piirid
+
+| Andmed või otsus | Autoriteetne allikas |
+|---|---|
+| Ühise järjekorra järjestus | Oracle |
+| Töö keskne identiteet ja olek | Oracle |
+| Hold-tööd | Oracle |
+| Globaalse raske töö täitmiskoht | Oracle |
+| Kehtiv täitmise token | Oracle |
+| Tegeliku OS-protsessi olemasolu sama buudi sees | vastava rakenduse worker ja adapter |
+| Ubuntu buudi identiteet | `/proc/sys/kernel/random/boot_id` |
+| Mahukad sisendid, ajutised failid ja väljundid | vastava rakenduse runtime |
+| Täielik protsessilogi | vastava rakenduse runtime/logikataloog |
+| Google’i lubatud e-posti aadressid | serveri saladuste konfiguratsioon |
+| ORDS-i ühine Basic-autentimise kasutajanimi ja parool | rakenduste saladuste konfiguratsioon ja ORDS |
+
+Rakendus ei pea hoidma oma ootel tööde kohalikku koopiat. Oracle on ainus autoriteetne allikas selle kohta, millise rakenduse töö on järjekorra ees ja kas seda saab käivitada.
+
+## 9. Rakendusepõhine worker ja tööadapter
+
+Valitud lahendus kasutab iga liidestatud rakenduse juures ühte kerget workerit. Worker võib olla eraldi protsess või rakenduse projekti juurde kuuluv teenus. See ei tähenda uue konteineri loomist iga transkribeerimise või muu töö jaoks.
+
+Rakendusepõhist mudelit eelistatakse kesksele rakendusteülesele täitmisworkerile, sest:
+
+- rakendus tunneb oma sõltuvusi ja runtime-katalooge;
+- rakenduse saladusi ei pea koondama kesksesse privilegeeritud teenusesse;
+- kesksele workerile ei pea andma Docker socket’it ega ligipääsu kõigi rakenduste keskkondadele;
+- tööadapter ja töö runtime’i elutsükkel jäävad rakenduse juurde.
+
+Iga rakendus otsustab ise, millised oma protsessid ta ühisesse järjekorda saadab. Keskne haldur ei juhi ega lahenda rakenduse sisemist töövoogu.
+
+## 10. Töö esitamine
+
+Rakendus esitab ORDS-ile vähemalt:
+
+- registreeritud `application_code` väärtuse;
+- registreeritud `job_type` väärtuse;
+- töötüübi lepingule vastavad parameetrid;
+- unikaalse idempotentsusvõtme.
+
+Kõik liidestatud rakendused kasutavad sama ORDS-i Basic-autentimise kasutajat. `application_code` tuleb päringu sisust ja on kliendi deklareeritud tunnus, mitte autentimisega tõendatud identiteet. Teadlikult aktsepteeritakse riski, et üks sama mandaati omav rakendus võib esineda teisena.
+
+Oracle’i toiming ühe transaktsiooni piires:
+
+1. kontrollib, et kliendi saadetud `application_code` on registreeritud ja aktiivne;
+2. kontrollib, et töötüüp on rakendusele lubatud;
+3. valideerib parameetrid;
+4. leiab sama rakenduse ja idempotentsusvõtmega olemasoleva töö või loob uue;
+5. lisab uue tavatöö järjekorra lõppu;
+6. tagastab keskse avaliku töö ID ja oleku.
+
+Võrgutõrke järel sama idempotentsusvõtmega korduspäring tagastab olemasoleva töö ega loo duplikaati.
+
+## 11. Järjekord ja ühe raske töö piirang
+
+Oracle hoiab järjekorra tegelikku järjestust. Esialgu on üks globaalne täitmiskoht rasketele töödele.
+
+Täitmiskoha andmine peab olema atomaarne:
+
+1. lukustatakse globaalne täitmiskoht;
+2. loetakse järjekorra esimene käivitatav töö;
+3. kontrollitakse, et workeri deklareeritud `application_code` vastab järjekorra esimesele tööle ja töötüüp on sellele rakendusele lubatud;
+4. luuakse täitmiskatse ja unikaalne täitmise token;
+5. seotakse täitmiskoht töö ning tokeniga;
+6. töö viiakse reserveeritud olekusse;
+7. transaktsioon kinnitatakse;
+8. alles seejärel tagastatakse töö workerile.
+
+Kui järjekorra esimene töö kuulub rakendusele, mille worker ei ole kättesaadav, ei tohi teise rakenduse worker sellest vaikimisi mööda minna. Vastasel juhul ei vastaks haldusliideses nähtav järjestus tegelikule täitmisjärjestusele. Blokeeriva töö saab kasutaja panna hold-olekusse või eemaldada.
+
+## 12. Töö võtmine ja täitmise token
+
+Worker saadab claim’is oma `application_code` väärtuse. Oracle ei tagasta tööd, kui järjekorra esimese käivitatava töö rakenduse kood sellega ei ühti. Kuna kõik workerid kasutavad sama Basic-autentimise mandaati, on rakenduse kood kliendi deklareeritud ja selle võltsimise risk teadlikult aktsepteeritud.
+
+Iga reserveerimine saab monotoonselt muutuva või muul viisil üheselt kordumatu täitmise tokeni. Kõik järgnevad teated peavad sisaldama sama tokenit:
+
+- käivitamise kinnitus;
+- heartbeat;
+- edenemise metaandmed, kui neid kasutatakse;
+- edukas või vigane lõpptulemus.
+
+Oracle aktsepteerib teadet ainult siis, kui token on endiselt selle töö ja täitmiskoha kehtiv token. See väldib vana workeri või hilinenud võrgupäringu mõju uuemale täitmiskatsele.
+
+Claim peab olema korduskindel. Kui vastus kaob, peab sama worker sama claim’i tunnusega saama tagasi sama reserveeringu, mitte uue töö ega uue täitmiskatse.
+
+## 13. Tulevane MVPx wakeup-laiendus
+
+Käesolev jaotis ei kuulu MVP1 teostusse, andmemudelisse ega vastuvõtukriteeriumidesse. See säilitab kontrollitud PoC tulemuse ja võimaliku hilisema laienduse kavandi.
+
+### 13.1. Põhimõte
+
+Kui Oracle’i transaktsioon muudab järjekorra selliseks, et vaba täitmiskoha jaoks on järgmine töö olemas, luuakse samas transaktsioonis püsiv wakeup’i saatmise kirje.
+
+Wakeup’i vajadus võib tekkida vähemalt siis, kui:
+
+- esimene töö lisatakse tühja järjekorda;
+- töötav töö lõpetab ja järgmine töö saab käivitatavaks;
+- hold-töö taastatakse olukorras, kus täitmiskoht on vaba;
+- järjekorra ümberjärjestamise järel muutub käivitatav sihtrakendus;
+- Ubuntu restardi taastamiskontroll vabastab vana täitmiskoha.
+
+### 13.2. Asünkroonne saatmine
+
+`UTL_HTTP` päringut ei saadeta töö olekut muutva põhitransaktsiooni sees. Vastasel juhul sõltuks järjekorra transaktsiooni kestus ja õnnestumine Ubuntu endpoint’i või võrgu vastusest.
+
+Põhitransaktsioon lisab kirje wakeup’i outbox-tabelisse. `DBMS_SCHEDULER` käivitab eraldi PL/SQL-protseduuri, mis:
+
+1. võtab saatmata teavituse;
+2. teeb HTTPS `POST` päringu;
+3. märgib eduka saatmise;
+4. jätab ebaõnnestunud teavituse kordamiseks ootele;
+5. piirab korduskatsete sagedust ja salvestab viimase vea ilma saladusteta.
+
+Wakeup on vähemalt-üks-kord teavitus: sama teavitus võib jõuda endpoint’ini mitu korda. Endpoint peab kasutama unikaalset `notification_id` väärtust ja olema korduskindel.
+
+### 13.3. Teavituse sisu
+
+Teavitus sisaldab minimaalselt:
+
+- `notification_id`;
+- sihtrakenduse koodi;
+- tehnilist ajatemplimetaandmestikku.
+
+Teavitus ei sisalda:
+
+- shellikäsku;
+- adapteri käivituskäsku;
+- töö saladusi;
+- usaldatavat luba töö käivitamiseks.
+
+Pärast wakeup’i küsib worker ORDS-ist töö. Kui järjekord on vahepeal muutunud, täitmiskoht ei ole vaba või workerile sobivat tööd ei ole, ei käivitata midagi.
+
+### 13.4. Wakeup-endpoint’i topoloogia
+
+Iga rakenduse kirjes on selle rakenduse enda täpne HTTPS wakeup-URL. Kui vaba täitmiskoha jaoks leitakse järjekorra esimene töö, lahendab Oracle töö rakenduse kaudu selle registreeritud URL-i ja saadab teavituse otse vastava rakenduse endpoint’ile.
+
+Keskset rakendusteülest wakeup-vastuvõtjat ei kasutata. Rakenduse endpoint äratab ainult sama rakenduse workeri. Worker teeb seejärel ORDS-i kaudu autoriteetse claim’i ega käivita tööd üksnes wakeup’i sisu põhjal.
+
+Wakeup-URL-i registreerimine ja muutmine on haldustoiming. URL peab olema HTTPS-aadress, läbima valideerimise ning vastama lubatud hosti ja Oracle’i võrgu-ACL-i reeglitele. URL-i ennast võib hoida rakenduse kirjes, kuid autentimissaladust ei hoita seal avatekstina.
+
+Iga rakenduse tegeliku domeeni, nginx-konfiguratsiooni, endpoint’i ja workeri loomine jääb vastava rakenduse projekti ülesandeks. Käesolev projekt ei määra nende sisemist teostust.
+
+## 14. MVP1 polling
+
+MVP1 tavarežiimis küsib iga jõude rakenduse worker ORDS-ist tööd iga 5 minuti järel. Intervall on seadistatav, kuid seda ei seata lühemaks kui üks minut. Worker teeb ühe päringu, mis on korraga nii kontroll kui ka atomaarne claim; eraldi „kas tööd on” päringut ei tehta.
+
+Claim sisaldab vähemalt:
+
+- workeri deklareeritud `application_code` väärtust;
+- workeri instantsi ID-d;
+- `host_id` ja praegust `boot_id` väärtust;
+- korduskindlat claim’i tunnust.
+
+Kui globaalne täitmiskoht on hõivatud, järjekord on tühi või järjekorra esimene töö kuulub teisele rakendusele, tagastab ORDS minimaalse tühja vastuse. Tühja pollingu kohta ei looda töö sündmust ega mahukat rakenduslogi.
+
+Worker teeb claim’i kohe enda käivitumisel ja seejärel 5-minutilise intervalliga. Mitme workeri täpselt samaaegse päringu vältimiseks lisatakse intervallile väike seadistatav juhuslik hajutus.
+
+Töötav worker ei polli uut tööd. Ta saadab aktiivse töö kohta heartbeat’i ja lõppoleku teateid. Kui töö lõpeb, muutub worker taas jõudeolevaks ning järgmine töö käivitub selle rakenduse workeri järgneva eduka claim’i järel.
+
+ORDS-i `429 Too Many Requests`, ajutise 5xx vastuse või võrguvea järel kordab worker sama päringut kasvava ooteajaga ja väikese juhusliku hajutusega. `Retry-After` päise olemasolul kasutatakse vähemalt selles määratud ooteaega. Claim’i kordus kasutab sama claim’i tunnust.
+
+## 15. Heartbeat ja protsessi tegelik olek
+
+Töötav worker saadab MVP1-s heartbeat’i iga 5 minuti järel koos:
+
+- töö ID-ga;
+- täitmise tokeniga;
+- `host_id` väärtusega;
+- `boot_id` väärtusega;
+- workeri instantsi ID-ga.
+
+Heartbeat’i aegumine ei tõenda, et protsess on lõppenud. Põhjuseks võib olla ORDS-i, Oracle’i või võrgu tõrge ajal, mil Ubuntu protsess jätkab tööd.
+
+Seetõttu võib aegunud heartbeat muuta töö oleku kontrollimist vajavaks või `UNKNOWN` olekusse, kuid ei vabasta üksi globaalset täitmiskohta ega luba uut rasket tööd käivitada.
+
+Heartbeat’i intervall on seadistatav. Aegumise piir peab olema intervallist pikem ja ei ole veel kinnitatud. Üks vahele jäänud heartbeat ei muuda tööd lõppenuks ega vabasta täitmiskohta.
+
+## 16. Ubuntu restart ja boot ID
+
+Töö käivitamisel salvestatakse täitmiskatse juurde Ubuntu väärtus:
+
+```text
+/proc/sys/kernel/random/boot_id
+```
+
+See identifitseerib konkreetse Linuxi buudi. Worker saadab `host_id` ja praeguse `boot_id` Oracle’ile kohe käivitumisel, enne uue töö küsimist.
+
+### 16.1. Muutunud `boot_id`
+
+Kui sama `host_id` poolelioleva töö salvestatud `boot_id` erineb praegusest, on tõendatud, et vana operatsioonisüsteemi käivitus lõppes ja selle buudi protsess ei saa enam töötada.
+
+Oracle teeb ühe tehinguga:
+
+1. märgib vana täitmiskatse katkestatuks põhjusega `HOST_RESTART`;
+2. viib töö kokkulepitud olekusse `INTERRUPTED`, `FAILED` või taastamist vajavasse olekusse;
+3. vabastab vana täitmise tokeni ja globaalse täitmiskoha;
+4. jätab järgmise töö rakenduse workeri järgneva claim-pollingu jaoks kättesaadavaks.
+
+Katkestatud tööd ei käivitata automaatselt uuesti, kui töötüübi leping ei luba tõendatult korduskindlat automaatset kordust.
+
+### 16.2. Sama `boot_id`
+
+Kui restartis ainult worker või konteiner, kuid `boot_id` ei muutunud, võib vana alamprotsess endiselt töötada. Oracle ei saa selle puudumist ise tõendada.
+
+Vastava rakenduse worker peab kontrollima oma adapteri protsessi, cgroup’i, konteineri või muu usaldusväärse runtime-tunnuse kaudu:
+
+- kui protsess töötab, taastatakse jälgimine;
+- kui protsessi puudumine on tõendatud, lõpetatakse vana täitmiskatse;
+- kui tulemus on ebaselge, jääb töö `UNKNOWN` olekusse ja uus raske töö ei käivitu.
+
+Pelgalt PID väärtus ei ole piisav, sest PID võib olla taaskasutatud.
+
+## 17. Olekumudel
+
+Kavandatavad olekud:
+
+- `QUEUED` — töö ootab ühises järjekorras;
+- `HELD` — töö on säilitatud, kuid ei ole käivitatav;
+- `CLAIMED` — töö ja täitmiskoht on workerile reserveeritud, kuid protsessi käivitamine pole veel kinnitatud;
+- `RUNNING` — worker kinnitas täitmise alustamise;
+- `SUCCEEDED` — töö lõpetas edukalt;
+- `FAILED` — töö lõpetas veaga;
+- `INTERRUPTED` — töö täitmine katkes näiteks hosti restardi tõttu;
+- `REMOVED` — käivitumata töö eemaldati lõplikult;
+- `UNKNOWN` — tegelikku täitmisolekut ei saa üheselt tõendada.
+
+Lõppolekute ja `INTERRUPTED` oleku korduskäivituse täpne poliitika tuleb enne andmemudeli lukustamist kinnitada.
+
+`UNKNOWN` ei vabasta täitmiskohta automaatselt.
+
+## 18. Järjekorra haldustoimingud
+
+Oracle teostab samas autoriteetses järjekorras järgmised toimingud:
+
+- `move-up`;
+- `move-down`;
+- `move-first`;
+- `move-last`;
+- `hold`;
+- `resume`, mis lisab töö järjekorra lõppu;
+- käivitumata töö eemaldamine.
+
+Toiming kasutab töö versiooninumbrit või järjekorra versiooni. Kui olek on pärast kasutajaliidese lugemist muutunud, tagastatakse konflikt ja aegunud toimingut ei rakendata.
+
+Kui hold- või eemaldamistoiming võistleb claim’iga, otsustab Oracle’i transaktsiooniline lukk, kumb toiming sai esimesena õiguse. Juba `CLAIMED` või `RUNNING` tööd ei muudeta hold-toiminguga töötava töö katkestamiseks.
+
+## 19. Esimese versiooni ulatusest väljas
+
+Töötava `CLAIMED` või `RUNNING` töö kasutaja algatatud katkestamine ei kuulu selle versiooni ulatusse. Keskne haldur ei paku selleks API-t, kasutajaliidese toimingut ega workeri või adapteri katkestamis- ja koristamislepingut.
+
+See piirang ei muuda tõrkejärgset taastamist. Hosti restardi või muu tõendatud ootamatu lõppemise korral viiakse täitmiskatse taastamisreeglite järgi olekusse `INTERRUPTED`, `FAILED` või `UNKNOWN`. Käivitumata `QUEUED` või `HELD` töö eemaldamine jääb järjekorra tavaliseks haldustoiminguks.
+
+## 20. Oracle’i loogiline andmemudel
+
+Tabelite ja veergude lõplikud nimed lukustatakse eraldi skeemikavandis. Loogiliselt on vaja vähemalt järgmisi andmegruppe.
+
+### 20.1. Rakendused
+
+- rakenduse kood;
+- lubatud olek;
+- rakenduse kirjeldav nimi;
+- lubatud töötüüpide seos.
+
+### 20.2. Töötüübid
+
+- rakenduse kood;
+- töötüübi kood;
+- parameetrilepingu versioon;
+- automaatse korduskatse poliitika;
+- adapteri versiooni metaandmed.
+
+### 20.3. Tööd
+
+- sisemine ID ja avalik juhuslik ID;
+- rakenduse ja töötüübi kood;
+- idempotentsusvõti;
+- valideeritud parameetrid JSON-vormingus;
+- olek ja järjekorra järjestuse võti;
+- tulemus- ja logiviited;
+- UTC ajatemplid;
+- optimistliku lukustamise versioon.
+
+Unikaalsus peab hõlmama vähemalt rakenduse identiteeti ja idempotentsusvõtit.
+
+### 20.4. Täitmiskatsed
+
+- töö ID ja katse number;
+- täitmise token;
+- workeri instantsi ID;
+- `host_id` ja `boot_id`;
+- claim’i, käivituse, heartbeat’i ja lõpu ajad;
+- exit code ja lõpetamise põhjus;
+- adapteri versioon.
+
+### 20.5. Täitmiskohad
+
+- ressursiklass või globaalse koha tunnus;
+- aktiivse töö ja täitmiskatse seos;
+- kehtiv täitmise token;
+- versioon.
+
+Esimeses versioonis on üks raske töö täitmiskoht. Mudel ei pea esimeses versioonis pakkuma üldist mitme ressursiklassi schedulerit.
+
+### 20.6. Sündmused
+
+- töö ID;
+- sündmuse tüüp;
+- tegutseja liik ja identiteet;
+- tehnilised detailid ilma saladusteta;
+- UTC ajatempel.
+
+Tühja pollingu kohta ei looda sündmust.
+
+### 20.7. Tulevase MVPx wakeup outbox
+
+Seda andmegruppi MVP1 skeemi ei lisata. Wakeup-laienduse korral on vaja vähemalt:
+
+- teavituse ID;
+- sihtrakendus;
+- olek;
+- loomise, viimase katse ja eduka saatmise aeg;
+- katsete arv;
+- järgmise katse aeg;
+- viimase vea puhastatud kokkuvõte.
+
+## 21. ORDS-i esialgne API
+
+Täpsed teed ja JSON-skeemid lukustatakse enne implementatsiooni OpenAPI lepingus.
+
+### 21.1. Rakenduse tööde API
+
+- töö esitamine;
+- deklareeritud rakenduse töö oleku lugemine;
+- deklareeritud rakenduse töö tulemuse viite lugemine.
+
+### 21.2. Workeri API
+
+- hosti ja workeri käivituse registreerimine koos `boot_id` väärtusega;
+- töö claim;
+- käivitamise kinnitamine;
+- heartbeat;
+- töö lõpetamine.
+
+### 21.3. Haldus-API
+
+- töötava, ootel ja hold-tööde vaade;
+- töö detail;
+- järjekorra liigutamine;
+- hold, resume ja käivitumata töö eemaldamine.
+
+Rakenduse ja workeri päring sisaldab `application_code` väärtust. Endpoint’id tagastavad ainult selle deklareeritud rakenduse jaoks vajaliku minimaalse andmehulga. Ühine Basic-autentimine ei tõenda, milline rakendus päringu tegelikult saatis.
+
+## 22. Autentimine ja õigused
+
+### 22.1. Rakendused ja workerid
+
+Rakendused ja workerid kasutavad `fun_o` projektiga sama põhimustrit: ORDS-i HTTPS URL ning HTTP Basic autentimine. OAuth 2.0 `client_credentials` voogu ja rakendusepõhiseid ORDS kasutajaid ei kasutata.
+
+Kõigile liidestatud rakendustele ühine ORDS-i kasutajanimi ja parool:
+
+- asub rakenduse saladuste konfiguratsioonis;
+- ei kuulu Git-i;
+- ei lähe töö parameetritesse ega logidesse;
+- peab olema roteeritav.
+
+Rakendus saadab `application_code` väärtuse päringus. Oracle kontrollib, et kood on aktiivne ja töötüüp sellele lubatud, kuid ühine mandaat ei välista teise rakenduse koodi kasutamist. See on teadlikult aktsepteeritud risk.
+
+### 22.2. Inimese haldusliides
+
+Google’i autentimine ja `.env`-is lubatud e-posti aadresside loend jäävad inimese haldusliidese jaoks eraldi mehhanismiks. Google’i identiteeti ei kasutata rakenduse worker’i autentimiseks.
+
+### 22.3. Oracle’i skeemid
+
+Tootmislahendus ei tööta `ADMIN` kasutajana. Võimalikud variandid on:
+
+1. üks rakendusskeem, mis omab tabeleid, pakette ja ORDS-mooduleid;
+2. eraldi omanikuskeem järjekorra andmetele ning pakettidele ja eraldi ORDS-i API-skeem, millel on ainult vajalikud käivitusõigused.
+
+Kahe skeemi mudel vähendab ORDS-i kaudu ligipääsetava skeemi õigusi, kuid lisab haldus- ja grantide keerukust. Valik ja skeemide nimed ei ole veel kinnitatud.
+
+MVP1 ei vaja rakendusskeemile Oracle’ist väljamineva HTTPS-i õigust. Tulevase wakeup-laienduse korral annab `ADMIN` selle ainult täpselt kinnitatud wakeup-hostidele; `DBMS_NETWORK_ACL_ADMIN` haldusõigust rakendusskeemile ei anta.
+
+## 23. Kasutajaliides
+
+Minimalistliku haldusliidese nõuded jäävad samaks:
+
+- Google’iga sisselogimine;
+- töötava töö ja tegeliku järjekorra kuvamine;
+- hold-tööd;
+- töö detail koos päritolurakenduse, töötüübi, oleku, aegade ja logiviitega;
+- järjekorra liigutamine;
+- hold, resume ja käivitumata töö eemaldamine.
+
+Brauser ei suhtle Oracle’i tabelitega otse. Haldusveebi backend kontrollib Google’i sessiooni ja kasutab kaitstud ORDS-i haldusendpoint’e.
+
+## 24. Võrk ja turvalisus
+
+- Rakenduste tööde esitamine, claim, heartbeat ja olekuteatamine liiguvad rakendusest otse ORDS-i HTTPS API-sse, mitte avaliku `haldus.fun-o.eu` rakenduste API kaudu.
+- ORDS-i URL ei ole avalikust internetist kättesaadav; ligipääsu piirab Oracle Cloudi taseme võrgu-ACL.
+- ORDS-i Basic-autentimise mandaat on täiendav rakendustaseme kaitse, mitte võrgu-ACL-i asendus.
+- Kõik liidestatud rakendused kasutavad sama ORDS-i mandaati ja deklareerivad ise `application_code` väärtuse; teise rakendusena esinemise risk on teadlikult aktsepteeritud.
+- Kõik töö parameetrid valideeritakse Oracle’i paketis töötüübi lepingu järgi.
+- Saladusi ei kirjutata Oracle’i sündmustesse, URL-idesse, rakenduslogidesse ega Git-i.
+- Brauser ei suhtle ORDS-i rakenduste või workerite endpoint’idega otse.
+- MVP1 ei vaja Oracle’ist Ubuntu serveri suunas avalikku tehnilist endpoint’i.
+- Tulevase MVPx wakeup-laienduse korral rakenduvad lisaks jaotises 13 kirjeldatud HTTPS-, autentimis- ja võrgu-ACL-i nõuded.
+
+## 25. Tõrkeolukorrad ja taastamine
+
+### 25.1. Töö esitamise vastus kaob
+
+Rakendus kordab päringut sama idempotentsusvõtmega ja saab olemasoleva töö ID.
+
+### 25.2. ORDS tagastab `429`, ajutise 5xx vastuse või päring ebaõnnestub võrgus
+
+Klient kordab sama loogilist päringut kasvava ooteajaga ja väikese juhusliku hajutusega. `Retry-After` päise olemasolul järgitakse vähemalt seda. Töö esitamisel kasutatakse sama idempotentsusvõtit, claim’il sama claim’i tunnust ning olekuteatel sama täitmise tokenit.
+
+### 25.3. Claim’i vastus kaob
+
+Worker kordab sama claim’i tunnusega päringut. Oracle tagastab sama reserveeringu või selle autoriteetse hetkeseisu.
+
+### 25.4. ORDS või Oracle pole ajutiselt kättesaadav
+
+Juba töötavat protsessi ei lõpetata ainult heartbeat’i saatmise vea tõttu. Worker kordab olekuteadet. Oracle ei väljasta samal ajal uut tööd, kuni vana töö tegelik olek pole tõendatud.
+
+### 25.5. Worker restartis, Ubuntu ei restartinud
+
+`boot_id` on sama. Worker kontrollib oma rakenduse runtime’i. Ebaselgus viib `UNKNOWN` olekusse ja säilitab täitmiskoha blokeeringu.
+
+### 25.6. Ubuntu restartis
+
+Uus `boot_id` tõendab vana buudi protsessi lõppu. Oracle lõpetab vana täitmiskatse ja vabastab koha. Järgmine töö käivitub vastava rakenduse workeri järgneva eduka claim-pollingu järel.
+
+### 25.7. Oracle restartis
+
+Järjekord, täitmiskoht ja tokenid taastuvad püsivatest tabelitest. Workerite järgmine heartbeat või claim kooskõlastab runtime’i oleku.
+
+### 25.8. Heartbeat jääb saamata
+
+Kadunud või aegunud heartbeat ei vabasta täitmiskohta automaatselt. See võib tekitada hoiatuse või viia töö kontrollimist vajavasse `UNKNOWN` olekusse. Koht vabastatakse ainult kinnitatud lõpptulemuse või vana protsessi puudumise tõendi alusel.
+
+## 26. Logid, tööfailid ja jälgitavus
+
+- Oracle säilitab töö metaandmed, olekud, täitmiskatsed ja tehnilised sündmused.
+- Täielikku transkribeerimis-, diariseerimis- või muud protsessilogi Oracle’isse ei salvestata.
+- Mahukad sisendid, ajutised failid ja väljundid jäävad rakenduse runtime-kataloogi.
+- Oracle’is hoitakse ainult tulemus- ja logiviiteid ning diagnostilist kokkuvõtet.
+- Rakenduse logi peab olema seostatav keskse töö ID ja täitmise tokeniga.
+- Tühja pollingu ja heartbeat’i tavapärane liiklus ei tohi tekitada piiramatut sündmus- ega rakenduslogi.
+- Säilitamisajad ei ole veel kinnitatud.
+
+## 27. Testimine
+
+### 27.1. Tulevase wakeup-laienduse juba tehtud tehniline tõendus
+
+- `UTL_HTTP` otsene HTTPS-päring Oracle’ist Ubuntu serverile;
+- sama päring `DBMS_SCHEDULER` taustajob’ist;
+- mõlemad katsed õnnestusid `ADMIN` kasutajana hostile `fun-o.eu`.
+
+### 27.2. Skeemi- ja ORDS-i PoC
+
+- tootmisele kavandatud piiratud skeemi õigused;
+- ORDS-i ühine HTTP Basic mandaat;
+- Oracle Cloudi võrgu-ACL-i tegelik ligipääsupiirang;
+- kliendi saadetud `application_code` ja selle lubatud töötüübi kontroll;
+- keelatud töötüübi tagasilükkamine.
+
+### 27.3. Järjekorra integratsioonikatsed
+
+- idempotentne töö esitamine;
+- kahe rakenduse tööd ühes järjekorras;
+- korraga ainult üks kehtiv täitmise token;
+- range järjekorra järjestus;
+- hold, resume, eemaldamine ja ümberjärjestamine;
+- claim’i vastuse kadumine;
+- `429` vastus töö esitamisel, claim’il, heartbeat’il ja lõpetamisel koos korduskindla retry’ga;
+- mitme jõude workeri samaaegne claim, millest ainult üks saab globaalse täitmiskoha;
+- hilinenud vana tokeniga heartbeat’i tagasilükkamine.
+
+### 27.4. Pollingu ja heartbeat’i integratsioonikatsed
+
+- jõude worker teeb claim’i 5-minutilise seadistatava intervalliga;
+- töötav worker ei polli uut tööd;
+- töötav worker saadab heartbeat’i 5-minutilise seadistatava intervalliga;
+- tühjad pollingud ei loo töö sündmusi ega piiramatut logi;
+- kadunud või aegunud heartbeat ei vabasta täitmiskohta;
+- järjekorra esimese töö rakenduse worker puudub ning teine rakendus ei möödu sellest tööst.
+
+### 27.5. Tulevase MVPx wakeup’i integratsioonikatsed
+
+Neid katseid MVP1-s ei tehta:
+
+- outbox-kirje loomine samas transaktsioonis järjekorra muutusega;
+- Scheduler `POST` tegelikule wakeup-endpoint’ile;
+- endpoint’i autentimine;
+- korduv sama `notification_id`;
+- ajutine võrguviga ja korduskatse;
+- wakeup’i kadumine ning varupolling.
+
+### 27.6. Taastamiskatsed
+
+- workeri restart sama `boot_id` väärtusega;
+- Ubuntu restart uue `boot_id` väärtusega;
+- ORDS-i ajutine puudumine töötava töö ajal;
+- Oracle’i ajutine puudumine töötava töö ajal;
+- ebaselge protsessi olek ja `UNKNOWN` blokeering;
+- `HELD` töö säilimine kõigi restartide järel.
+
+Kõik andmebaasi või tegelikke tööfaile muutvad testid vajavad enne eraldi kasutaja luba ja isoleeritud testandmeid.
+
+## 28. Teostusetapid
+
+### Etapp 0 — dokumentatsiooni kooskõlastamine
+
+- märkida ORDS valitud ja Jenkins kõrvale heidetud variandiks;
+- eraldada MVP1 polling ja tulevane MVPx wakeup;
+- viia lähteülesanne, tööreeglid ja tehniline spetsifikatsioon kooskõlla.
+
+### Etapp 1 — skeemikavand ja API leping
+
+- kinnitada ühe või kahe skeemi mudel ja nimed;
+- lukustada tabelite ning olekute leping;
+- koostada ORDS OpenAPI leping;
+- koostada ühise HTTP Basic mandaadi ja `application_code` kontrolli leping;
+- kinnitada polling’u, heartbeat’i ja retry seadistus.
+
+### Etapp 2 — Oracle’i järjekorra PoC
+
+- versioonitud skeem;
+- idempotentne esitamine;
+- autoriteetne järjestus;
+- üks globaalne täitmiskoht;
+- claim ja täitmise token;
+- sündmused.
+
+### Etapp 3 — rakenduse worker’i näidis
+
+- üks ohutu näidisworker ja adapter;
+- 5-minutiline seadistatav polling;
+- heartbeat ja lõpetamine.
+
+### Etapp 4 — haldusliides
+
+- Google’i autentimine;
+- järjekorra-, hold- ja detailivaated;
+- ümberjärjestamine, hold, resume ja eemaldamine;
+- logiviited.
+
+### Etapp 5 — esimene tegelik adapter
+
+- adapter valitakse eraldi otsusega;
+- rakendus ise otsustab, millised oma protsessid saadetakse kesksesse järjekorda;
+- kontrollitakse tööfailide elutsüklit, tulemust ja taastamist.
+
+### Tulevane MVPx — wakeup-laiendus
+
+- wakeup outbox’i skeemimuudatus;
+- `DBMS_SCHEDULER` outbox’i saatja;
+- turvatud rakendusepõhised wakeup-endpoint’id;
+- vähemalt-üks-kord teavituse deduplikeerimine;
+- polling jääb taastamise varumehhanismiks.
+
+## 29. Avatud otsused
+
+Enne MVP1 implementatsiooni tuleb kinnitada:
+
+1. kas kasutatakse ühte rakendusskeemi või eraldi omaniku- ja ORDS API skeemi;
+2. skeemi või skeemide nimed;
+3. pollingu ja heartbeat’i 5-minutilise intervalli juhusliku hajutuse piir;
+4. heartbeat’i aegumise piir, mis ei vabasta automaatselt täitmiskohta;
+5. `INTERRUPTED` oleku täpne tähendus ja lubatud korduskäivituse poliitika;
+6. claim’i ja protsessi käivitamise vahelise ootamatu tõrke taastamisreegel;
+7. `UNKNOWN` olekust kontrollitud väljumise ja operaatori sekkumise kord;
+8. kas töötüübipõhine maksimaalne tavapärane kestus on ainult hoiatus või mõjutab olekut;
+9. esimesed tegelikud töötüübid ja nende parameetrilepingud;
+10. logide, sündmuste ja lõpetatud tööde säilitamisajad;
+11. haldusliidese backendi ja ORDS-i haldusendpoint’ide täpne vastutuspiir.
+
+Tulevase MVPx wakeup-laienduse avatud otsused on:
+
+1. wakeup-päringu autentimise ja saladuse roteerimise viis;
+2. rakenduse wakeup-URL-i registreerimise, muutmise, valideerimise ja keelamise reeglid;
+3. outbox’i Scheduler job’i käivitusviis, kordusintervall ja lõplikult ebaõnnestunud teavituse käsitlus;
+4. wakeup-hostinimede TLS-i ja Oracle’i väljamineva võrgu ACL-i nõuded.
+
+## 30. Viited
+
+- [`lahteylesanne.md`](lahteylesanne.md) — projekti probleem, ulatus ja vastuvõtukriteeriumid.
+- [`tehniline_spek.md`](tehniline_spek.md) — kõrvale heidetud Jenkinsi-põhine tehniline variant.
+- [Oracle: Call Web Services from Autonomous AI Database](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/call-web-services.html) — `UTL_HTTP`, võrgu-ACL ja avaliku või privaatse sihthosti nõuded.
+- [Oracle: PL/SQL Package Notes for Autonomous AI Database](https://docs.oracle.com/en/cloud/paas/autonomous-json-database/ajdug/autonomous-plsql-packages.html) — `DBMS_SCHEDULER` ja `UTL_HTTP` piirangud Autonomous Database’is.
+- [Oracle REST Data Services: Developing REST Applications](https://docs.oracle.com/en/database/oracle/oracle-rest-data-services/26.3/orddg/developing-REST-applications.html) — ORDS moodulid, handlerid ja REST-rakenduste teostus.
+- `/home/ubuntu/fun_o/backend/app/main.py` — kontrollitud `ORDS_BASE_URL`, `ORDS_USERNAME`, `ORDS_PASSWORD` ja HTTP Basic päringumuster.
+- `/home/ubuntu/fun_o/db/oracle/ords/07_ords_handlers.sql` ning `/home/ubuntu/fun_o/db/oracle/security/06_grants_runtime.sql` — kontrollitud ORDS API skeemi ja pakettide `EXECUTE` õiguste muster.
+- [Linux kernel documentation: `/proc/sys/kernel/random/boot_id`](https://docs.kernel.org/admin-guide/sysctl/kernel.html#random) — buudi identifikaatori omadus.
