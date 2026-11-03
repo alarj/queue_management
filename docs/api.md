@@ -24,7 +24,7 @@ Soovituslik konfiguratsioon:
 
 ```dotenv
 ORDS_BASE_URL=https://GAEA57CDC53A00B-WOQC8AR450A6CUM0.adb.eu-frankfurt-1.oraclecloudapps.com/ords/jobs
-ORDS_USERNAME=JOBS_API
+ORDS_USERNAME=
 ORDS_PASSWORD=
 ```
 
@@ -34,12 +34,16 @@ lisa `ORDS_PASSWORD` väärtus serveris käsitsi. `.env` on Gitist välistatud.
 
 Liidestatav rakendus lisab oma konfiguratsiooni ka registreeritud
 `application_code` väärtuse. Kõik päringud kasutavad HTTP Basic autentimist.
-Kasutajanimi ja parool tulevad rakenduse saladuste konfiguratsioonist.
+Kui rakendusel on oma Oracle'i skeem, kasutatakse selle skeemi ORDS-is
+REST-enable'itud kasutajat; oma skeemita rakenduse jaoks kasutatakse
+`JOBS_API` kasutajat. Kasutajanimi ja parool tulevad rakenduse saladuste
+konfiguratsioonist.
 JSON-päringute päis on `Content-Type: application/json`.
 
 Ilma kehtiva Basic mandaadita tagastab ORDS `401 Unauthorized`.
 
 Rakendus saadab igas päringus oma registreeritud `application_code` väärtuse.
+Praegune ORDS-i moodul ei seo Basic-kasutajat automaatselt selle väärtusega.
 
 ## 4. Endpoint’id
 

@@ -13,13 +13,13 @@ BEGIN
         p_status         => 'PUBLISHED'
     );
 
-    -- Autonomous Database authenticates the REST-enabled JOBS_API database
-    -- user with HTTP Basic and grants it the ORDS role "SQL Developer".
+    -- Autonomous Database authenticates a REST-enabled database user with
+    -- HTTP Basic. The user needs the ORDS role "SQL Developer" for this module.
     ORDS.DEFINE_PRIVILEGE(
         p_privilege_name => 'jobs.api.auth',
         p_roles          => OWA.VC_ARR('SQL Developer'),
         p_label          => 'Queue API authentication',
-        p_description    => 'Requires JOBS_API database authentication.'
+        p_description    => 'Requires REST-enabled database authentication.'
     );
     ORDS.SET_MODULE_PRIVILEGE(
         p_module_name    => c_module,

@@ -79,11 +79,13 @@ Lahendus peab:
 
 ### 6.2. Rakendused ja workerid
 
-- Rakendused ja workerid kasutavad ORDS-i kutsumiseks ühist HTTP Basic autentimise kasutajat, samal põhimõttel nagu `fun_o` projektis.
+- Keskne haldusbackend kasutab ORDS-i kutsumiseks `JOBS_API` HTTP Basic kasutajat.
+- Kui liidestataval rakendusel on oma Oracle'i skeem, kasutab rakendus ja tema worker ORDS-is oma skeemi kasutajat. Selleks peab kasutaja olema ORDS-is REST-enable'itud ning talle peab olema antud mooduli `jobs.api` kasutamiseks vajalik ORDS-i roll.
+- Oma skeemita rakenduse jaoks võib kasutada `JOBS_API` kasutajat.
 - ORDS-i baas-URL, kasutajanimi ja parool tulevad `.env`-ist või muust saladuste hoidlast.
 - OAuth 2.0 `client_credentials` voogu ei kasutata.
 - Rakendus saadab igas asjakohases päringus oma registreeritud `application_code` tunnuse.
-- `application_code` on kliendi deklareeritud tunnus, mitte autentimisega tõendatud identiteet. Teadlikult aktsepteeritakse riski, et üks sama ORDS-i mandaati omav rakendus võib esineda teise rakendusena.
+- `application_code` on kliendi deklareeritud tunnus, mitte praeguse ORDS-i mooduli poolt autentimisega seotud identiteet. Oma skeemi kasutamine ei muuda seda seost automaatseks.
 - Oracle kontrollib siiski, et `application_code` on registreeritud ja aktiivne ning esitatud `job_type` on sellele rakendusele lubatud.
 
 ## 7. Põhikasutusjuht
@@ -219,7 +221,7 @@ Esimene versioon loetakse vastuvõetuks, kui:
 14. heartbeat’i aegumine või ebaselge sama buudi olukord ei käivita teist rasket tööd;
 15. `429` või ajutise võrgutõrke järel kordab klient päringut kasvava ooteajaga ega loo duplikaattööd või uut täitmiskatset;
 16. rakendus ei saa saata suvalist käivitatavat käsku;
-17. ORDS-i Basic-autentimine töötab ühise mandaadiga ning Oracle valideerib kliendi saadetud `application_code` ja selle lubatud töötüübi;
+17. ORDS-i Basic-autentimine töötab `JOBS_API` haldusmandaadi või rakenduse oma ORDS-i kasutajaga ning Oracle valideerib kliendi saadetud `application_code` ja selle lubatud töötüübi;
 18. ORDS-i rakenduste ja workerite API ei ole avalikust internetist ega `haldus.fun-o.eu` kaudu kättesaadav;
 19. saladusi ega lubatud Google’i e-posti aadresse ei leidu repositooriumi jälgitavates failides.
 

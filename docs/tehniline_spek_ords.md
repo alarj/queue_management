@@ -218,7 +218,7 @@ Adapter on rakenduse ja töötüübi leping. See määrab:
 | Mahukad sisendid, ajutised failid ja väljundid | vastava rakenduse runtime |
 | Täielik protsessilogi | vastava rakenduse runtime/logikataloog |
 | Google’i lubatud e-posti aadressid | serveri saladuste konfiguratsioon |
-| ORDS-i ühine Basic-autentimise kasutajanimi ja parool | rakenduste saladuste konfiguratsioon ja ORDS |
+| ORDS-i Basic-autentimise kasutajanimi ja parool | vastava kliendi saladuste konfiguratsioon ja ORDS |
 
 Rakendus ei pea hoidma oma ootel tööde kohalikku koopiat. Oracle on ainus autoriteetne allikas selle kohta, millise rakenduse töö on järjekorra ees ja kas seda saab käivitada.
 
@@ -249,7 +249,7 @@ Rakendus esitab ORDS-ile vähemalt:
 järjekorda ei peeta; väli võimaldab rakendusel ja workeril siduda Oracle'i keskse
 `job_id` rakenduse enda töödeldava protsessi või tegevusega.
 
-Kõik liidestatud rakendused kasutavad sama ORDS-i Basic-autentimise kasutajat. `application_code` tuleb päringu sisust ja on kliendi deklareeritud tunnus, mitte autentimisega tõendatud identiteet. Teadlikult aktsepteeritakse riski, et üks sama mandaati omav rakendus võib esineda teisena.
+Keskne haldusbackend kasutab `JOBS_API` ORDS-i kasutajat. Kui liidestataval rakendusel on oma Oracle'i skeem, kasutab rakendus ja tema worker ORDS-is oma skeemi kasutajat; oma skeemita rakenduse jaoks võib kasutada `JOBS_API` kasutajat. `application_code` tuleb päringu sisust ning praegune ORDS-i moodul ei seo seda autentitud kasutajaga automaatselt. Oracle kontrollib siiski, et kood on registreeritud ja aktiivne ning töötüüp sellele lubatud.
 
 Oracle’i toiming ühe transaktsiooni piires:
 
@@ -283,7 +283,7 @@ Kui järjekorra esimene töö kuulub rakendusele, mille worker ei ole kättesaad
 
 ## 12. Töö võtmine ja täitmise token
 
-Worker saadab claim’is oma `application_code` väärtuse. Oracle ei tagasta tööd, kui järjekorra esimese käivitatava töö rakenduse kood sellega ei ühti. Kuna kõik workerid kasutavad sama Basic-autentimise mandaati, on rakenduse kood kliendi deklareeritud ja selle võltsimise risk teadlikult aktsepteeritud.
+Worker saadab claim’is oma `application_code` väärtuse. Oracle ei tagasta tööd, kui järjekorra esimese käivitatava töö rakenduse kood sellega ei ühti. Rakenduse kood on kliendi deklareeritud väärtus; praegune ORDS-i moodul ei seo seda automaatselt autentitud kasutajaga.
 
 Iga reserveerimine saab monotoonselt muutuva või muul viisil üheselt kordumatu täitmise tokeni. Kõik järgnevad teated peavad sisaldama sama tokenit:
 
@@ -628,7 +628,7 @@ Muutva halduspäringu JSON-keha sisaldab välja `actor_id`, mille väärtuseks p
 haldusbackend Google'iga autenditud kasutaja e-posti aadressi. Eemaldamise
 kinnituse küsib kasutajaliides enne ORDS-i väljakutset.
 
-Rakenduse ja workeri päring sisaldab `application_code` väärtust. Endpoint’id tagastavad ainult selle deklareeritud rakenduse jaoks vajaliku minimaalse andmehulga. Ühine Basic-autentimine ei tõenda, milline rakendus päringu tegelikult saatis.
+Rakenduse ja workeri päring sisaldab `application_code` väärtust. Endpoint’id tagastavad ainult selle deklareeritud rakenduse jaoks vajaliku minimaalse andmehulga. Praegune ORDS-i Basic-autentimine ei seo kasutajat automaatselt `application_code` väärtusega.
 
 ## 22. Autentimine ja õigused
 
@@ -636,28 +636,35 @@ Rakenduse ja workeri päring sisaldab `application_code` väärtust. Endpoint’
 
 Rakendused, workerid ja haldusbackend kasutavad `fun_o` projektiga sama
 põhimustrit: ORDS-i HTTPS URL ning HTTP Basic autentimine. OAuth 2.0
-`client_credentials` voogu ja eraldi rakenduse- või halduspõhiseid ORDS-i
-kasutajaid ei kasutata.
+`client_credentials` voogu ei kasutata.
 
-Kõigile ORDS-i klientidele ühine ORDS-i kasutajanimi ja parool:
+`JOBS_API` on ORDS-i avaldatud fassaadi skeem ning keskse haldusbackendi
+ORDS-i kasutaja. Kui liidestataval rakendusel on oma Oracle'i skeem, kasutab
+rakendus ja tema worker ORDS-i jaoks oma skeemi kasutajat. Sellel kasutajal
+peab olema ORDS-i REST-enable ning õigus moodulile `jobs.api`; praeguses
+teostuses annab selle privilege `jobs.api.auth` kaudu ORDS-i roll `SQL Developer`.
 
-- asub rakenduse saladuste konfiguratsioonis;
+Rakenduse oma ORDS-i kasutaja ei vaja `JOBS_APP` tabeli- ega paketiõigusi:
+handler käivitub `JOBS_API` skeemis ja kutsub sealt `JOBS_APP` facade-paketti.
+Oma skeemita rakenduse jaoks võib kasutada `JOBS_API` kasutajat.
+
+Iga ORDS-i kasutajanimi ja parool:
+
+- asub vastava kliendi saladuste konfiguratsioonis;
 - ei kuulu Git-i;
 - ei lähe töö parameetritesse ega logidesse;
 - peab olema roteeritav.
 
-ORDS-i moodul `jobs.api` on seotud privilege'iga `jobs.api.auth`, mis nõuab
-Autonomous Database'i Basic autentimisega kasutajale antavat ORDS-i rolli
-`SQL Developer`.
-
-Rakendus saadab `application_code` väärtuse päringus. Oracle kontrollib, et kood on aktiivne ja töötüüp sellele lubatud, kuid ühine mandaat ei välista teise rakenduse koodi kasutamist. See on teadlikult aktsepteeritud risk.
+Rakendus saadab `application_code` väärtuse päringus. Oracle kontrollib, et
+kood on aktiivne ja töötüüp sellele lubatud. Praegune ORDS-i moodul ei seo
+autenditud kasutajat automaatselt `application_code` väärtusega.
 
 ### 22.2. Inimese haldusliides
 
 Google’i autentimine ja `.env`-is lubatud e-posti aadresside loend jäävad inimese
 haldusliidese jaoks eraldi mehhanismiks. Google’i identiteeti ei kasutata
 rakenduse worker’i autentimiseks. Google'iga autenditud haldusbackend kasutab
-ORDS-i kutsumiseks sama Basic-mandaati nagu rakendused ja workerid.
+ORDS-i kutsumiseks `JOBS_API` Basic-mandaati.
 
 ### 22.3. Oracle’i skeemid
 
@@ -701,7 +708,7 @@ aadressist, mitte brauseri sisendist.
 - Rakenduste tööde esitamine, claim, heartbeat ja olekuteatamine liiguvad rakendusest otse ORDS-i HTTPS API-sse, mitte avaliku `haldus.fun-o.eu` rakenduste API kaudu.
 - ORDS-i URL ei ole avalikust internetist kättesaadav; ligipääsu piirab Oracle Cloudi taseme võrgu-ACL.
 - ORDS-i Basic-autentimise mandaat on täiendav rakendustaseme kaitse, mitte võrgu-ACL-i asendus.
-- Kõik liidestatud rakendused kasutavad sama ORDS-i mandaati ja deklareerivad ise `application_code` väärtuse; teise rakendusena esinemise risk on teadlikult aktsepteeritud.
+- Keskne haldusbackend kasutab `JOBS_API` mandaati. Oma Oracle'i skeemiga rakendus võib kasutada oma ORDS-i kasutajat; `application_code` jääb siiski kliendi deklareeritud väärtuseks.
 - Kõik töö parameetrid valideeritakse Oracle’i paketis töötüübi lepingu järgi.
 - Saladusi ei kirjutata Oracle’i sündmustesse, URL-idesse, rakenduslogidesse ega Git-i.
 - Brauser ei suhtle ORDS-i rakenduste või workerite endpoint’idega otse.
@@ -763,7 +770,7 @@ Kadunud või aegunud heartbeat ei vii tööd aktiivsest olekust välja. See või
 ### 27.2. Skeemi- ja ORDS-i PoC
 
 - tootmisele kavandatud piiratud skeemi õigused;
-- ORDS-i ühine HTTP Basic mandaat;
+- `JOBS_API` haldusmandaat ning oma skeemiga rakenduse ORDS-i kasutaja;
 - Oracle Cloudi võrgu-ACL-i tegelik ligipääsupiirang;
 - kliendi saadetud `application_code` ja selle lubatud töötüübi kontroll;
 - keelatud töötüübi tagasilükkamine.
@@ -828,7 +835,7 @@ Kõik andmebaasi või tegelikke tööfaile muutvad testid vajavad enne eraldi ka
 - kinnitada ühe või kahe skeemi mudel ja nimed;
 - lukustada tabelite ning olekute leping;
 - koostada ja hoida ajakohasena rakenduste ORDS API kasutusleping;
-- koostada ühise HTTP Basic mandaadi ja `application_code` kontrolli leping;
+- koostada `JOBS_API` haldusmandaadi, rakenduse oma ORDS-i kasutaja ning `application_code` kontrolli leping;
 - kinnitada polling’u, heartbeat’i ja retry seadistus.
 
 ### Etapp 2 — Oracle’i järjekorra PoC
