@@ -117,6 +117,8 @@ Koostaja: AI (OpenAI Codex), kasutaja juhiste järgi. Esimene versioon kopeeriti
 - [`AGENTS.md`](../AGENTS.md) — projekti siduvad tööreeglid.
 - [`docs/lahteylesanne.md`](lahteylesanne.md) — probleem, eesmärk, ulatus ja vastuvõtukriteeriumid.
 - [`docs/tehniline_spek_ords.md`](tehniline_spek_ords.md) — valitud Oracle’i ja ORDS-i põhine arhitektuur, olekumudel, andmemudel, API, etapistus ning tulevase wakeup-laienduse kontrollitud PoC.
+- [`db/erd.md`](db/erd.md) — MVP1 Oracle'i füüsiline andmemudel, tabelite ja veergude kommentaarid ning terviklusreeglid.
+- [`db/schema/001_core_schema.sql`](db/schema/001_core_schema.sql) — `JOBS_APP` skeemi tabelite, sequence'ite, piirangute, indeksite ja kommentaaride loomise skript.
 - [`docs/tehniline_spek.md`](tehniline_spek.md) — kõrvale heidetud Jenkinsi-põhine variant, mis säilib võrdlus- ja ajaloomaterjalina.
 
 ### Lähte- ja võrdlusmaterjalid

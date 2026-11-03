@@ -131,7 +131,7 @@ Rakendus B ──► ORDS töö esitamine ────┤
           tegelik pikk protsess                tegelik pikk protsess
 ```
 
-Worker ei saa töö käivitamise otsust lokaalselt teha. Perioodiline päring on atomaarne claim: Oracle kontrollib järjekorra esimest tööd ja globaalset täitmiskohta ning tagastab töö ainult sobivale workerile.
+Worker ei saa töö käivitamise otsust lokaalselt teha. Perioodiline päring on atomaarne claim: Oracle kontrollib järjekorra esimest käivitatavat tööd ja ühe aktiivse raske töö piirangut ning tagastab töö ainult sobivale workerile.
 
 ## 7. Komponendid ja vastutused
 
@@ -148,7 +148,7 @@ Vastutab:
 - hosti, workeri, heartbeat’i ja `boot_id` metaandmete eest;
 - tehnilise sündmusajaloo eest.
 
-Tootmisskeemi nimi ja otsus ühe või kahe skeemi kasutamise kohta ei ole veel kinnitatud.
+`JOBS_APP` on andmete ja äriloogika omanik. Skeem ei ole ORDS-is avaldatav ning tootmisrakendused ei ühendu sellega otse.
 
 ### 7.2. ORDS
 
@@ -160,6 +160,8 @@ Vastutab:
 - minimaalsete vastuste tagastamise eest.
 
 ORDS ei käivita Ubuntu protsessi ega ole järjekorra teine koopia.
+
+ORDS-is avaldatakse skeem `JOBS_API` base path’iga `jobs`. Rakenduste seadistatav baas-URL on seetõttu kujul `https://<adb-host>/ords/jobs`.
 
 ### 7.3. Tulevase MVPx `DBMS_SCHEDULER`
 
@@ -209,7 +211,7 @@ Adapter on rakenduse ja töötüübi leping. See määrab:
 | Ühise järjekorra järjestus | Oracle |
 | Töö keskne identiteet ja olek | Oracle |
 | Hold-tööd | Oracle |
-| Globaalse raske töö täitmiskoht | Oracle |
+| Ühe aktiivse raske töö piirang | Oracle |
 | Kehtiv täitmise token | Oracle |
 | Tegeliku OS-protsessi olemasolu sama buudi sees | vastava rakenduse worker ja adapter |
 | Ubuntu buudi identiteet | `/proc/sys/kernel/random/boot_id` |
@@ -239,8 +241,13 @@ Rakendus esitab ORDS-ile vähemalt:
 
 - registreeritud `application_code` väärtuse;
 - registreeritud `job_type` väärtuse;
+- kohustusliku `application_job_id` väärtuse, mis seob keskse töö rakenduse enda protsessi või tegevusega;
 - töötüübi lepingule vastavad parameetrid;
 - unikaalse idempotentsusvõtme.
+
+`application_job_id` ei ole rakenduse kohaliku järjekorra tunnus. Rakenduse sisemist
+järjekorda ei peeta; väli võimaldab rakendusel ja workeril siduda Oracle'i keskse
+`job_id` rakenduse enda töödeldava protsessi või tegevusega.
 
 Kõik liidestatud rakendused kasutavad sama ORDS-i Basic-autentimise kasutajat. `application_code` tuleb päringu sisust ja on kliendi deklareeritud tunnus, mitte autentimisega tõendatud identiteet. Teadlikult aktsepteeritakse riski, et üks sama mandaati omav rakendus võib esineda teisena.
 
@@ -251,22 +258,24 @@ Oracle’i toiming ühe transaktsiooni piires:
 3. valideerib parameetrid;
 4. leiab sama rakenduse ja idempotentsusvõtmega olemasoleva töö või loob uue;
 5. lisab uue tavatöö järjekorra lõppu;
-6. tagastab keskse avaliku töö ID ja oleku.
+6. tagastab keskse `job_id` ja oleku.
 
 Võrgutõrke järel sama idempotentsusvõtmega korduspäring tagastab olemasoleva töö ega loo duplikaati.
 
 ## 11. Järjekord ja ühe raske töö piirang
 
-Oracle hoiab järjekorra tegelikku järjestust. Esialgu on üks globaalne täitmiskoht rasketele töödele.
+Oracle hoiab järjekorra tegelikku järjestust. Esialgu võib olla korraga üks aktiivne raske töö.
 
-Täitmiskoha andmine peab olema atomaarne:
+Ühe aktiivse töö piirang jõustatakse `JOBS.status` alusel Oracle'i unikaalse funktsioonipõhise indeksiga. Indeks annab olekutele `CLAIMED`, `RUNNING` ja `UNKNOWN` sama mittevõtmetu väärtuse ning teistele olekutele `NULL`; seetõttu saab aktiivses olekus olla ainult üks töö.
 
-1. lukustatakse globaalne täitmiskoht;
-2. loetakse järjekorra esimene käivitatav töö;
-3. kontrollitakse, et workeri deklareeritud `application_code` vastab järjekorra esimesele tööle ja töötüüp on sellele rakendusele lubatud;
+Claim peab olema atomaarne:
+
+1. kontrollitakse, et ükski töö pole aktiivses olekus;
+2. loetakse väikseima `queue_order` väärtusega käivitatav töö, jättes vahele tööd, mille `previous_job_id` viitab tööle, mis pole olekus `SUCCEEDED`;
+3. kontrollitakse, et workeri deklareeritud `application_code` vastab leitud tööle ja töötüüp on sellele rakendusele lubatud;
 4. luuakse täitmiskatse ja unikaalne täitmise token;
-5. seotakse täitmiskoht töö ning tokeniga;
-6. töö viiakse reserveeritud olekusse;
+5. töö viiakse olekusse `CLAIMED`;
+6. unikaalne indeks välistab teise töö samaaegse aktiivseks muutmise;
 7. transaktsioon kinnitatakse;
 8. alles seejärel tagastatakse töö workerile.
 
@@ -283,7 +292,7 @@ Iga reserveerimine saab monotoonselt muutuva või muul viisil üheselt kordumatu
 - edenemise metaandmed, kui neid kasutatakse;
 - edukas või vigane lõpptulemus.
 
-Oracle aktsepteerib teadet ainult siis, kui token on endiselt selle töö ja täitmiskoha kehtiv token. See väldib vana workeri või hilinenud võrgupäringu mõju uuemale täitmiskatsele.
+Oracle aktsepteerib teadet ainult siis, kui token kuulub endiselt selle töö aktiivsele täitmiskatsele. See väldib vana workeri või hilinenud võrgupäringu mõju uuemale täitmiskatsele.
 
 Claim peab olema korduskindel. Kui vastus kaob, peab sama worker sama claim’i tunnusega saama tagasi sama reserveeringu, mitte uue töö ega uue täitmiskatse.
 
@@ -299,7 +308,7 @@ Wakeup’i vajadus võib tekkida vähemalt siis, kui:
 
 - esimene töö lisatakse tühja järjekorda;
 - töötav töö lõpetab ja järgmine töö saab käivitatavaks;
-- hold-töö taastatakse olukorras, kus täitmiskoht on vaba;
+- hold-töö taastatakse olukorras, kus aktiivset rasket tööd ei ole;
 - järjekorra ümberjärjestamise järel muutub käivitatav sihtrakendus;
 - Ubuntu restardi taastamiskontroll vabastab vana täitmiskoha.
 
@@ -332,7 +341,7 @@ Teavitus ei sisalda:
 - töö saladusi;
 - usaldatavat luba töö käivitamiseks.
 
-Pärast wakeup’i küsib worker ORDS-ist töö. Kui järjekord on vahepeal muutunud, täitmiskoht ei ole vaba või workerile sobivat tööd ei ole, ei käivitata midagi.
+Pärast wakeup’i küsib worker ORDS-ist töö. Kui järjekord on vahepeal muutunud, aktiivne raske töö on olemas või workerile sobivat tööd ei ole, ei käivitata midagi.
 
 ### 13.4. Wakeup-endpoint’i topoloogia
 
@@ -355,7 +364,7 @@ Claim sisaldab vähemalt:
 - `host_id` ja praegust `boot_id` väärtust;
 - korduskindlat claim’i tunnust.
 
-Kui globaalne täitmiskoht on hõivatud, järjekord on tühi või järjekorra esimene töö kuulub teisele rakendusele, tagastab ORDS minimaalse tühja vastuse. Tühja pollingu kohta ei looda töö sündmust ega mahukat rakenduslogi.
+Kui aktiivne raske töö on olemas, järjekord on tühi või järjekorra esimene käivitatav töö kuulub teisele rakendusele, tagastab ORDS minimaalse tühja vastuse. Tühja pollingu kohta ei looda töö sündmust ega mahukat rakenduslogi.
 
 Worker teeb claim’i kohe enda käivitumisel ja seejärel 5-minutilise intervalliga. Mitme workeri täpselt samaaegse päringu vältimiseks lisatakse intervallile väike seadistatav juhuslik hajutus.
 
@@ -375,9 +384,9 @@ Töötav worker saadab MVP1-s heartbeat’i iga 5 minuti järel koos:
 
 Heartbeat’i aegumine ei tõenda, et protsess on lõppenud. Põhjuseks võib olla ORDS-i, Oracle’i või võrgu tõrge ajal, mil Ubuntu protsess jätkab tööd.
 
-Seetõttu võib aegunud heartbeat muuta töö oleku kontrollimist vajavaks või `UNKNOWN` olekusse, kuid ei vabasta üksi globaalset täitmiskohta ega luba uut rasket tööd käivitada.
+Seetõttu võib aegunud heartbeat muuta töö oleku kontrollimist vajavaks või `UNKNOWN` olekusse, kuid ei vii tööd üksi aktiivsest olekust välja ega luba uut rasket tööd käivitada.
 
-Heartbeat’i intervall on seadistatav. Aegumise piir peab olema intervallist pikem ja ei ole veel kinnitatud. Üks vahele jäänud heartbeat ei muuda tööd lõppenuks ega vabasta täitmiskohta.
+Heartbeat’i intervall on seadistatav. Aegumise piir peab olema intervallist pikem ja ei ole veel kinnitatud. Üks vahele jäänud heartbeat ei muuda tööd lõppenuks ega vii seda aktiivsest olekust välja.
 
 ## 16. Ubuntu restart ja boot ID
 
@@ -420,7 +429,7 @@ Kavandatavad olekud:
 
 - `QUEUED` — töö ootab ühises järjekorras;
 - `HELD` — töö on säilitatud, kuid ei ole käivitatav;
-- `CLAIMED` — töö ja täitmiskoht on workerile reserveeritud, kuid protsessi käivitamine pole veel kinnitatud;
+- `CLAIMED` — töö on workerile reserveeritud, kuid protsessi käivitamine pole veel kinnitatud;
 - `RUNNING` — worker kinnitas täitmise alustamise;
 - `SUCCEEDED` — töö lõpetas edukalt;
 - `FAILED` — töö lõpetas veaga;
@@ -430,7 +439,7 @@ Kavandatavad olekud:
 
 Lõppolekute ja `INTERRUPTED` oleku korduskäivituse täpne poliitika tuleb enne andmemudeli lukustamist kinnitada.
 
-`UNKNOWN` ei vabasta täitmiskohta automaatselt.
+`UNKNOWN` jääb aktiivseks olekuks ja takistab uue raske töö claim'i.
 
 ## 18. Järjekorra haldustoimingud
 
@@ -444,7 +453,7 @@ Oracle teostab samas autoriteetses järjekorras järgmised toimingud:
 - `resume`, mis lisab töö järjekorra lõppu;
 - käivitumata töö eemaldamine.
 
-Toiming kasutab töö versiooninumbrit või järjekorra versiooni. Kui olek on pärast kasutajaliidese lugemist muutunud, tagastatakse konflikt ja aegunud toimingut ei rakendata.
+Toiming lukustab mõjutatud read ja kontrollib nende tegelikku hetkeseisu. Kui toiming ei ole enam lubatud, tagastatakse konflikt ja muudatust ei rakendata.
 
 Kui hold- või eemaldamistoiming võistleb claim’iga, otsustab Oracle’i transaktsiooniline lukk, kumb toiming sai esimesena õiguse. Juba `CLAIMED` või `RUNNING` tööd ei muudeta hold-toiminguga töötava töö katkestamiseks.
 
@@ -456,7 +465,9 @@ See piirang ei muuda tõrkejärgset taastamist. Hosti restardi või muu tõendat
 
 ## 20. Oracle’i loogiline andmemudel
 
-Tabelite ja veergude lõplikud nimed lukustatakse eraldi skeemikavandis. Loogiliselt on vaja vähemalt järgmisi andmegruppe.
+MVP1 füüsiline andmemudel, tabelite kommentaarid, võtmed ja terviklusreeglid asuvad failis [`db/erd.md`](../db/erd.md). Teostav DDL asub failis [`db/schema/001_core_schema.sql`](../db/schema/001_core_schema.sql).
+
+Loogiliselt on vaja vähemalt järgmisi andmegruppe.
 
 ### 20.1. Rakendused
 
@@ -469,20 +480,19 @@ Tabelite ja veergude lõplikud nimed lukustatakse eraldi skeemikavandis. Loogili
 
 - rakenduse kood;
 - töötüübi kood;
-- parameetrilepingu versioon;
-- automaatse korduskatse poliitika;
-- adapteri versiooni metaandmed.
+- inimesele kuvatav nimi;
+- lubatud olek.
 
 ### 20.3. Tööd
 
-- sisemine ID ja avalik juhuslik ID;
+- sequence'ist saadav keskne `job_id`;
 - rakenduse ja töötüübi kood;
+- kohustuslik `application_job_id`, mis seob keskse töö rakenduse enda protsessi või tegevusega;
+- valikuline eelmise töö viide;
 - idempotentsusvõti;
-- valideeritud parameetrid JSON-vormingus;
-- olek ja järjekorra järjestuse võti;
-- tulemus- ja logiviited;
-- UTC ajatemplid;
-- optimistliku lukustamise versioon.
+- tööliigi lepingu järgi valideeritud parameetrid JSON-vormingus;
+- olek ja `queue_order`;
+- ajatemplid, mille väärtused on UTC-s.
 
 Unikaalsus peab hõlmama vähemalt rakenduse identiteeti ja idempotentsusvõtit.
 
@@ -493,17 +503,11 @@ Unikaalsus peab hõlmama vähemalt rakenduse identiteeti ja idempotentsusvõtit.
 - workeri instantsi ID;
 - `host_id` ja `boot_id`;
 - claim’i, käivituse, heartbeat’i ja lõpu ajad;
-- exit code ja lõpetamise põhjus;
-- adapteri versioon.
+- exit code ja lõpetamise põhjus.
 
-### 20.5. Täitmiskohad
+### 20.5. Ühe aktiivse töö piirang
 
-- ressursiklass või globaalse koha tunnus;
-- aktiivse töö ja täitmiskatse seos;
-- kehtiv täitmise token;
-- versioon.
-
-Esimeses versioonis on üks raske töö täitmiskoht. Mudel ei pea esimeses versioonis pakkuma üldist mitme ressursiklassi schedulerit.
+Eraldi täitmiskohtade tabelit MVP1-s ei ole. Korraga ühe aktiivse raske töö reeglit jõustab `JOBS.status` põhine unikaalne funktsioonipõhine indeks. Oleku `UNKNOWN` korral jääb piirang kehtima ja uut rasket tööd ei saa claim'ida.
 
 ### 20.6. Sündmused
 
@@ -535,7 +539,6 @@ Täpsed teed ja JSON-skeemid lukustatakse enne implementatsiooni OpenAPI lepingu
 
 - töö esitamine;
 - deklareeritud rakenduse töö oleku lugemine;
-- deklareeritud rakenduse töö tulemuse viite lugemine.
 
 ### 21.2. Workeri API
 
@@ -575,12 +578,12 @@ Google’i autentimine ja `.env`-is lubatud e-posti aadresside loend jäävad in
 
 ### 22.3. Oracle’i skeemid
 
-Tootmislahendus ei tööta `ADMIN` kasutajana. Võimalikud variandid on:
+Tootmislahendus ei tööta `ADMIN` kasutajana. Kasutatakse kahte skeemi:
 
-1. üks rakendusskeem, mis omab tabeleid, pakette ja ORDS-mooduleid;
-2. eraldi omanikuskeem järjekorra andmetele ning pakettidele ja eraldi ORDS-i API-skeem, millel on ainult vajalikud käivitusõigused.
+1. `JOBS_APP` omab järjekorra tabeleid, sequence’e ja definer-rights PL/SQL-pakette;
+2. `JOBS_API` on ORDS-is base path’iga `jobs` avaldatud REST-fassaad.
 
-Kahe skeemi mudel vähendab ORDS-i kaudu ligipääsetava skeemi õigusi, kuid lisab haldus- ja grantide keerukust. Valik ja skeemide nimed ei ole veel kinnitatud.
+`JOBS_API` ei saa otseõigusi `JOBS_APP` tabelitele. Ta saab ainult `EXECUTE` õiguse konkreetselt ORDS-i jaoks mõeldud facade-paketile ning kutsub seda täielikult kvalifitseeritud nimega. Synonym ei ole nõutav.
 
 MVP1 ei vaja rakendusskeemile Oracle’ist väljamineva HTTPS-i õigust. Tulevase wakeup-laienduse korral annab `ADMIN` selle ainult täpselt kinnitatud wakeup-hostidele; `DBMS_NETWORK_ACL_ADMIN` haldusõigust rakendusskeemile ei anta.
 
@@ -591,7 +594,7 @@ Minimalistliku haldusliidese nõuded jäävad samaks:
 - Google’iga sisselogimine;
 - töötava töö ja tegeliku järjekorra kuvamine;
 - hold-tööd;
-- töö detail koos päritolurakenduse, töötüübi, oleku, aegade ja logiviitega;
+- töö detail koos päritolurakenduse, töötüübi, oleku ja aegadega;
 - järjekorra liigutamine;
 - hold, resume ja käivitumata töö eemaldamine.
 
@@ -637,18 +640,18 @@ Uus `boot_id` tõendab vana buudi protsessi lõppu. Oracle lõpetab vana täitmi
 
 ### 25.7. Oracle restartis
 
-Järjekord, täitmiskoht ja tokenid taastuvad püsivatest tabelitest. Workerite järgmine heartbeat või claim kooskõlastab runtime’i oleku.
+Järjekord, aktiivse töö olek ja tokenid taastuvad püsivatest tabelitest. Workerite järgmine heartbeat või claim kooskõlastab runtime’i oleku.
 
 ### 25.8. Heartbeat jääb saamata
 
-Kadunud või aegunud heartbeat ei vabasta täitmiskohta automaatselt. See võib tekitada hoiatuse või viia töö kontrollimist vajavasse `UNKNOWN` olekusse. Koht vabastatakse ainult kinnitatud lõpptulemuse või vana protsessi puudumise tõendi alusel.
+Kadunud või aegunud heartbeat ei vii tööd aktiivsest olekust välja. See võib tekitada hoiatuse või viia töö kontrollimist vajavasse `UNKNOWN` olekusse. Uue aktiivse töö saab lubada ainult kinnitatud lõpptulemuse või vana protsessi puudumise tõendi alusel.
 
 ## 26. Logid, tööfailid ja jälgitavus
 
 - Oracle säilitab töö metaandmed, olekud, täitmiskatsed ja tehnilised sündmused.
 - Täielikku transkribeerimis-, diariseerimis- või muud protsessilogi Oracle’isse ei salvestata.
 - Mahukad sisendid, ajutised failid ja väljundid jäävad rakenduse runtime-kataloogi.
-- Oracle’is hoitakse ainult tulemus- ja logiviiteid ning diagnostilist kokkuvõtet.
+- Oracle’is hoitakse ainult keskse järjekorra, täitmiskatsete ja sündmuste metaandmeid.
 - Rakenduse logi peab olema seostatav keskse töö ID ja täitmise tokeniga.
 - Tühja pollingu ja heartbeat’i tavapärane liiklus ei tohi tekitada piiramatut sündmus- ega rakenduslogi.
 - Säilitamisajad ei ole veel kinnitatud.
@@ -687,7 +690,7 @@ Kadunud või aegunud heartbeat ei vabasta täitmiskohta automaatselt. See võib 
 - töötav worker ei polli uut tööd;
 - töötav worker saadab heartbeat’i 5-minutilise seadistatava intervalliga;
 - tühjad pollingud ei loo töö sündmusi ega piiramatut logi;
-- kadunud või aegunud heartbeat ei vabasta täitmiskohta;
+- kadunud või aegunud heartbeat ei vii tööd aktiivsest olekust välja;
 - järjekorra esimese töö rakenduse worker puudub ning teine rakendus ei möödu sellest tööst.
 
 ### 27.5. Tulevase MVPx wakeup’i integratsioonikatsed
@@ -733,7 +736,7 @@ Kõik andmebaasi või tegelikke tööfaile muutvad testid vajavad enne eraldi ka
 - versioonitud skeem;
 - idempotentne esitamine;
 - autoriteetne järjestus;
-- üks globaalne täitmiskoht;
+- ühe aktiivse raske töö piirang;
 - claim ja täitmise token;
 - sündmused.
 
@@ -748,7 +751,6 @@ Kõik andmebaasi või tegelikke tööfaile muutvad testid vajavad enne eraldi ka
 - Google’i autentimine;
 - järjekorra-, hold- ja detailivaated;
 - ümberjärjestamine, hold, resume ja eemaldamine;
-- logiviited.
 
 ### Etapp 5 — esimene tegelik adapter
 
@@ -768,17 +770,15 @@ Kõik andmebaasi või tegelikke tööfaile muutvad testid vajavad enne eraldi ka
 
 Enne MVP1 implementatsiooni tuleb kinnitada:
 
-1. kas kasutatakse ühte rakendusskeemi või eraldi omaniku- ja ORDS API skeemi;
-2. skeemi või skeemide nimed;
-3. pollingu ja heartbeat’i 5-minutilise intervalli juhusliku hajutuse piir;
-4. heartbeat’i aegumise piir, mis ei vabasta automaatselt täitmiskohta;
-5. `INTERRUPTED` oleku täpne tähendus ja lubatud korduskäivituse poliitika;
-6. claim’i ja protsessi käivitamise vahelise ootamatu tõrke taastamisreegel;
-7. `UNKNOWN` olekust kontrollitud väljumise ja operaatori sekkumise kord;
-8. kas töötüübipõhine maksimaalne tavapärane kestus on ainult hoiatus või mõjutab olekut;
-9. esimesed tegelikud töötüübid ja nende parameetrilepingud;
-10. logide, sündmuste ja lõpetatud tööde säilitamisajad;
-11. haldusliidese backendi ja ORDS-i haldusendpoint’ide täpne vastutuspiir.
+1. pollingu ja heartbeat’i 5-minutilise intervalli juhusliku hajutuse piir;
+2. heartbeat’i aegumise piir, mis ei vii tööd automaatselt aktiivsest olekust välja;
+3. `INTERRUPTED` oleku täpne tähendus ja lubatud korduskäivituse poliitika;
+4. claim’i ja protsessi käivitamise vahelise ootamatu tõrke taastamisreegel;
+5. `UNKNOWN` olekust kontrollitud väljumise ja operaatori sekkumise kord;
+6. kas töötüübipõhine maksimaalne tavapärane kestus on ainult hoiatus või mõjutab olekut;
+7. esimesed tegelikud töötüübid ja nende parameetrilepingud;
+8. logide, sündmuste ja lõpetatud tööde säilitamisajad;
+9. haldusliidese backendi ja ORDS-i haldusendpoint’ide täpne vastutuspiir.
 
 Tulevase MVPx wakeup-laienduse avatud otsused on:
 

@@ -93,9 +93,9 @@ Lahendus peab:
 3. ORDS-i taga olev Oracle’i pakett valideerib rakenduse tunnuse, töötüübi, parameetrid ja idempotentsusvõtme ning lisab tavatöö ühise järjekorra lõppu.
 4. Kui mõni teine raske töö juba töötab, jääb uus töö ootama.
 5. Iga rakenduse worker pollib ORDS-i kokkulepitud intervalliga ja teeb ühe atomaarse claim-päringu.
-6. Oracle annab töö ainult siis, kui globaalne täitmiskoht on vaba ja järjekorra esimene käivitatav töö kuulub küsiva workeri deklareeritud rakendusele.
+6. Oracle annab töö ainult siis, kui muud aktiivset rasket tööd ei ole ja järjekorra esimene käivitatav töö kuulub küsiva workeri deklareeritud rakendusele.
 7. Worker käivitab registreeritud adapteri, kinnitab käivitumise, saadab töö ajal heartbeat’i ning teatab lõpptulemuse.
-8. Telliv rakendus saab keskse töö identifikaatori ning võib selle abil olekut ja tulemuse viidet pärida.
+8. Telliv rakendus saab keskse töö identifikaatori ning võib selle abil keskset olekut pärida.
 
 ## 8. Järjekorra haldamine
 
@@ -115,7 +115,7 @@ Eraldi mitmetasemelist prioriteedisüsteemi ei ole esimeses versioonis vaja. Pri
 
 Töötava `CLAIMED` või `RUNNING` töö kasutaja algatatud katkestamine ei kuulu MVP1 ulatusse. Haldur ei paku selleks API-t ega kasutajaliidese nuppu.
 
-See ei välista tõrkejärgset taastamist. Ubuntu restardi või muu tõendatud ootamatu lõppemise korral viiakse töö tehnilise taastamisreegli järgi sobivasse olekusse ja vabastatakse täitmiskoht ainult siis, kui vana protsessi puudumine on tõendatud. Ootel või `hold`-olekus töö eemaldamine ei ole töötava protsessi katkestamine.
+See ei välista tõrkejärgset taastamist. Ubuntu restardi või muu tõendatud ootamatu lõppemise korral viiakse töö tehnilise taastamisreegli järgi aktiivsest olekust välja ainult siis, kui vana protsessi puudumine on tõendatud. Ootel või `hold`-olekus töö eemaldamine ei ole töötava protsessi katkestamine.
 
 ## 10. Kasutajaliides
 
@@ -128,7 +128,7 @@ Esimese versiooni põhivaated:
 - Google’i sisselogimine;
 - järjekord koos töötava ja ootel töödega;
 - `hold`-olekus tööd;
-- töö detail koos oleku, päritolurakenduse, ajatemplite ja logiviitega.
+- töö detail koos oleku, päritolurakenduse ja ajatemplitega.
 
 Põhitoimingud peavad olema järjekorravaates otse kättesaadavad. Kasutajaliides peab küsima kinnitust pöördumatule eemaldamisele, kuid ei küsi põhjendust.
 
@@ -140,13 +140,14 @@ Põhitoimingud peavad olema järjekorravaates otse kättesaadavad. Kasutajaliide
 - Iga toetatud töötüüp on Oracle’is eelnevalt registreeritud. Klient ei saa saata suvalist shellikäsku.
 - Päring sisaldab kliendi deklareeritud `application_code` väärtust; selle teadlik turvarisk on kirjeldatud jaotises 6.2.
 - Töö parameetrid valideeritakse Oracle’i paketis töötüübi lepingu järgi.
+- Töö esitamisel saadab rakendus kohustusliku `application_job_id` väärtuse, mis seob keskse töö rakenduse enda protsessi või tegevusega; see ei ole kohaliku järjekorra tunnus.
 - Töö esitamine sisaldab idempotentsusvõtit, et võrgutõrke või `429` vastuse järel sama päringu kordamine ei looks duplikaati.
-- Telliv rakendus saab vähemalt keskse töö ID, oleku ja lõpptulemuse viite.
+- Telliv rakendus saab vähemalt keskse töö ID ja oleku.
 - Iga rakendus otsustab ise, millised oma protsessid ta ühisesse järjekorda saadab. Keskne haldur ei lahenda rakenduse sisemist töövoogu.
 
 ## 12. Andmete hoidmine
 
-Lahendus kasutab olemasolevat Oracle Autonomous Database’i ja sellele projektile loodavat eraldi skeemi või skeeme. Tootmislahendus ei tööta `ADMIN` kasutajana. Skeemide nimed ning ühe omaniku- või eraldi omaniku- ja ORDS API skeemi valik on veel avatud.
+Lahendus kasutab olemasolevat Oracle Autonomous Database’i ning kahte eraldi skeemi. `JOBS_APP` omab tabeleid ja järjekorra PL/SQL-loogikat. ORDS-is base path’iga `jobs` avaldatud `JOBS_API` omab REST-handler’eid ning saab `JOBS_APP` skeemis ainult kokkulepitud facade-paketi `EXECUTE` õiguse. `JOBS_API` ei saa otseõigusi `JOBS_APP` tabelitele. Tootmislahendus ei tööta `ADMIN` kasutajana.
 
 Oracle’is hoitakse haldusrakenduse metaolekut, sealhulgas:
 
@@ -155,10 +156,10 @@ Oracle’is hoitakse haldusrakenduse metaolekut, sealhulgas:
 - töö olek, järjekorra järjestus ja UTC ajatemplid;
 - `hold`-olekus tööd;
 - täitmiskatsed, täitmise token, `host_id`, `boot_id` ja heartbeat’i metaandmed;
-- üks globaalne raske töö täitmiskoht;
+- korraga ühe aktiivse raske töö piirang;
 - järjekorratoimingute sündmused ilma kohustusliku põhjenduseta.
 
-Rakenduste mahukad tööfailid, ajutised failid, täielikud protsessilogid ja väljundid jäävad vastavate rakenduste runtime-kataloogidesse. Oracle’is hoitakse ainult metaandmeid ning tulemus- ja logiviiteid.
+Rakenduste mahukad tööfailid, ajutised failid, täielikud protsessilogid ja väljundid jäävad vastavate rakenduste runtime-kataloogidesse. Oracle’is hoitakse ainult keskse järjekorra ja täitmiskatsete metaandmeid.
 
 ## 13. Mittefunktsionaalsed nõuded
 
@@ -177,7 +178,7 @@ Rakenduste mahukad tööfailid, ajutised failid, täielikud protsessilogid ja v�
 - Töötav worker ei polli uut tööd, vaid saadab ainult oma aktiivse töö heartbeat’i ja lõppoleku teateid.
 - ORDS-i `429 Too Many Requests`, ajutise 5xx vastuse või võrguvea järel korratakse päringut kasvava ooteajaga ja väikese juhusliku hajutusega. Kui vastus sisaldab `Retry-After` päist, eelistatakse seda.
 - Muutva päringu kordus kasutab sama idempotentsusvõtit, claim’i kordus sama claim’i tunnust ja olekuteade sama täitmise tokenit.
-- Heartbeat’i aegumine üksi ei tõenda protsessi lõppu ega vabasta globaalset täitmiskohta.
+- Heartbeat’i aegumine üksi ei tõenda protsessi lõppu ega vii tööd aktiivsest olekust välja.
 - Avalik aadress on `https://haldus.fun-o.eu`.
 - Nginx avaldab ainult brauserile vajalikud autentimis- ja haldusliidese endpoint’id. ORDS-i rakenduste ja workerite API-d ei vahendata `haldus.fun-o.eu` kaudu.
 
@@ -211,7 +212,7 @@ Esimene versioon loetakse vastuvõetuks, kui:
 7. ootel töö saab panna `hold`-olekusse ja hiljem järjekorra lõppu taastada;
 8. ootel või `hold`-olekus töö saab lõplikult eemaldada;
 9. järjekorra ja `hold`-tööde olek taastub teenuste taaskäivituse järel;
-10. töö detailist on näha päritolurakendus, töötüüp, olek, ajad ja logiviide;
+10. töö detailist on näha päritolurakendus, töötüüp, olek ja ajad;
 11. iga rakenduse jõude worker pollib ORDS-i seadistatava 5-minutilise intervalliga ning claim on atomaarne ja korduskindel;
 12. töötav worker saadab heartbeat’i ega polli samal ajal uut tööd;
 13. Ubuntu restardi järel tõendab muutunud `boot_id`, et vana protsess ei tööta, vana täitmiskatse lõpetatakse ja globaalne koht vabastatakse;
@@ -226,14 +227,13 @@ Esimene versioon loetakse vastuvõetuks, kui:
 
 Enne esimese töötava versiooni teostamist tuleb kinnitada:
 
-1. ühe rakendusskeemi või eraldi omaniku- ja ORDS API skeemi mudel ning skeemide nimed;
-2. pollingu ja heartbeat’i 5-minutilise intervalli juhusliku hajutuse piir;
-3. heartbeat’i aegumise piir, mis ei vabasta automaatselt täitmiskohta;
-4. `CLAIMED` oleku taastamisreegel olukorras, kus protsessi käivitamise kinnitus kaob;
-5. `INTERRUPTED` töö korduskäivituse poliitika;
-6. `UNKNOWN` olekust kontrollitud väljumise ja operaatori sekkumise kord;
-7. kas töötüübipõhine maksimaalne tavapärane kestus on ainult hoiatus või mõjutab olekut;
-8. logide, sündmuste ja lõpetatud tööde säilitamise kestus.
+1. pollingu ja heartbeat’i 5-minutilise intervalli juhusliku hajutuse piir;
+2. heartbeat’i aegumise piir, mis ei vii tööd automaatselt aktiivsest olekust välja;
+3. `CLAIMED` oleku taastamisreegel olukorras, kus protsessi käivitamise kinnitus kaob;
+4. `INTERRUPTED` töö korduskäivituse poliitika;
+5. `UNKNOWN` olekust kontrollitud väljumise ja operaatori sekkumise kord;
+6. kas töötüübipõhine maksimaalne tavapärane kestus on ainult hoiatus või mõjutab olekut;
+7. logide, sündmuste ja lõpetatud tööde säilitamise kestus.
 
 ## 17. Kõrvale heidetud ja tulevased variandid
 
