@@ -118,6 +118,8 @@ Koostaja: AI (OpenAI Codex), kasutaja juhiste järgi. Esimene versioon kopeeriti
 - [`docs/lahteylesanne.md`](lahteylesanne.md) — probleem, eesmärk, ulatus ja vastuvõtukriteeriumid.
 - [`docs/tehniline_spek_ords.md`](tehniline_spek_ords.md) — valitud Oracle’i ja ORDS-i põhine arhitektuur, olekumudel, andmemudel, API, etapistus ning tulevase wakeup-laienduse kontrollitud PoC.
 - [`docs/api.md`](api.md) — lakooniline ORDS API kasutusjuhend liidestatavatele rakendustele ja workeritele.
+- [`docs/ords_api_testitulemused.md`](ords_api_testitulemused.md) — 3. novembri 2026 ORDS API tegelike smoke-testide tulemused.
+- [`.env.example`](.env.example) — ORDS-i ühenduse konfiguratsiooni mittesalajane näidis kõigi nõutud parameetritega.
 - [`db/erd.md`](db/erd.md) — MVP1 Oracle'i füüsiline andmemudel, tabelite ja veergude kommentaarid ning terviklusreeglid.
 - [`db/schema/001_core_schema.sql`](db/schema/001_core_schema.sql) — `JOBS_APP` skeemi tabelite, sequence'ite, piirangute, indeksite ja kommentaaride loomise skript.
 - [`db/api/002_jobs_api_package.sql`](db/api/002_jobs_api_package.sql) — `JOBS_APP.PKG_JOBS_API` facade-pakett ja järjekorra äriloogika.

@@ -757,6 +757,10 @@ Kadunud või aegunud heartbeat ei vii tööd aktiivsest olekust välja. See või
 
 ### 27.3. Järjekorra integratsioonikatsed
 
+3. novembril 2026 tehtud tegelike ORDS smoke-testide tulemused asuvad failis
+[`ords_api_testitulemused.md`](ords_api_testitulemused.md). Järgmised punktid
+kirjeldavad veel katmata või korduvat integratsioonikatsete mahtu.
+
 - idempotentne töö esitamine;
 - kahe rakenduse tööd ühes järjekorras;
 - korraga ainult üks kehtiv täitmise token;

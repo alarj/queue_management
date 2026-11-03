@@ -28,8 +28,9 @@ ORDS_USERNAME=JOBS_API
 ORDS_PASSWORD=
 ```
 
-Projekti juurkausta `.env` sisaldab neid väärtusi. `ORDS_PASSWORD` väärtus tuleb
-lisada serveris käsitsi ja `.env` on Gitist välistatud.
+Projekti juurkausta [`.env.example`](../.env.example) sisaldab kõiki nõutud
+parameetreid ilma saladuse väärtuseta. Kopeeri see lokaalseks `.env` failiks ja
+lisa `ORDS_PASSWORD` väärtus serveris käsitsi. `.env` on Gitist välistatud.
 
 Liidestatav rakendus lisab oma konfiguratsiooni ka registreeritud
 `application_code` väärtuse. Kõik päringud kasutavad HTTP Basic autentimist.
