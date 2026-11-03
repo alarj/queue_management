@@ -533,12 +533,76 @@ Seda andmegruppi MVP1 skeemi ei lisata. Wakeup-laienduse korral on vaja vähemal
 
 ## 21. ORDS-i esialgne API
 
-Täpsed teed ja JSON-skeemid lukustatakse enne implementatsiooni OpenAPI lepingus.
+Teostatud endpoint'ide lakooniline kasutusjuhend asub failis
+[`api.md`](api.md). Oracle'i facade-pakett asub failis
+[`db/api/002_jobs_api_package.sql`](../db/api/002_jobs_api_package.sql) ja
+ORDS-handlerid failis
+[`db/ords/004_ords_handlers.sql`](../db/ords/004_ords_handlers.sql).
 
 ### 21.1. Rakenduse tööde API
 
-- töö esitamine;
-- deklareeritud rakenduse töö oleku lugemine;
+Töö esitamise endpoint on:
+
+```text
+POST /ords/jobs/application/jobs
+```
+
+JSON-päring sisaldab:
+
+```json
+{
+  "application_code": "err_video_to_text",
+  "job_type_code": "diarization",
+  "application_job_id": "165",
+  "idempotency_key": "unikaalne-võti",
+  "previous_job_id": null,
+  "parameters": {}
+}
+```
+
+`previous_job_id` on valikuline. `parameters` on JSON-objekt, mis salvestatakse
+Oracle'i veergu `JOBS.parameters_json`.
+
+Uue töö loomisel tagastatakse `201 Created`:
+
+```json
+{
+  "job_id": 123,
+  "status": "QUEUED"
+}
+```
+
+Sama rakenduse sama idempotentsusvõtmega korduspäring tagastab olemasoleva töö
+tegeliku keskse oleku vastusega `200 OK`. Kui sama idempotentsusvõtmega päringu
+`job_type_code`, `application_job_id`, `previous_job_id` või `parameters` erineb
+algsest päringust, tagastatakse `409 Conflict`; olemasolevat tööd ei muudeta ja
+uut tööd ei looda.
+
+Deklareeritud rakenduse töö oleku endpoint on
+`GET /ords/jobs/application/jobs/:job_id`; `application_code` saadetakse
+query-parameetrina.
+
+Kõik API veavastused kasutavad kuju:
+
+```json
+{
+  "error_code": "IDEMPOTENCY_CONFLICT",
+  "message": "Idempotency key is already used for a different job.",
+  "oracle_error": "ORA-20xxx: idempotency key is already used for a different job"
+}
+```
+
+`error_code` on stabiilne masinloetav tunnus ja klient ei tee äriloogilisi
+otsuseid `oracle_error` teksti põhjal. Oracle'ist pärineva vea korral sisaldab
+`oracle_error` tegelikku Oracle'i veateadet. Varem defineerimata Oracle'i viga
+tagastatakse HTTP `500 Internal Server Error` vastusega, `error_code` väärtusega
+`INTERNAL_ERROR` ja tegeliku Oracle'i veateatega. PL/SQL backtrace'i vastusesse
+ei lisata.
+
+Paketi fikseeritud ja andmemudeli veerupikkustega piiratud vastused kasutavad
+`VARCHAR2(4000)` tagastustüüpi. `CLOB` on kasutusel ainult vastustes, mille maht
+sõltub töö `parameters` JSON-ist või tagastatavate tööde, täitmiskatsete või
+sündmuste arvust.
 
 ### 21.2. Workeri API
 
@@ -550,31 +614,50 @@ Täpsed teed ja JSON-skeemid lukustatakse enne implementatsiooni OpenAPI lepingu
 
 ### 21.3. Haldus-API
 
-- töötava, ootel ja hold-tööde vaade;
-- töö detail;
-- järjekorra liigutamine;
-- hold, resume ja käivitumata töö eemaldamine.
+- `GET /ords/jobs/admin/queue` — töötava, ootel ja hold-tööde vaade;
+- `GET /ords/jobs/admin/jobs/:job_id` — töö detail;
+- `POST /ords/jobs/admin/jobs/:job_id/move-up` — ootel töö ühe koha võrra üles;
+- `POST /ords/jobs/admin/jobs/:job_id/move-down` — ootel töö ühe koha võrra alla;
+- `POST /ords/jobs/admin/jobs/:job_id/move-first` — ootel töö järjekorra algusesse;
+- `POST /ords/jobs/admin/jobs/:job_id/move-last` — ootel töö järjekorra lõppu;
+- `POST /ords/jobs/admin/jobs/:job_id/hold` — ootel töö hold-olekusse;
+- `POST /ords/jobs/admin/jobs/:job_id/resume` — hold-töö järjekorra lõppu;
+- `POST /ords/jobs/admin/jobs/:job_id/remove` — ootel või hold-töö lõplik eemaldamine.
+
+Muutva halduspäringu JSON-keha sisaldab välja `actor_id`, mille väärtuseks paneb
+haldusbackend Google'iga autenditud kasutaja e-posti aadressi. Eemaldamise
+kinnituse küsib kasutajaliides enne ORDS-i väljakutset.
 
 Rakenduse ja workeri päring sisaldab `application_code` väärtust. Endpoint’id tagastavad ainult selle deklareeritud rakenduse jaoks vajaliku minimaalse andmehulga. Ühine Basic-autentimine ei tõenda, milline rakendus päringu tegelikult saatis.
 
 ## 22. Autentimine ja õigused
 
-### 22.1. Rakendused ja workerid
+### 22.1. ORDS-i kasutaja
 
-Rakendused ja workerid kasutavad `fun_o` projektiga sama põhimustrit: ORDS-i HTTPS URL ning HTTP Basic autentimine. OAuth 2.0 `client_credentials` voogu ja rakendusepõhiseid ORDS kasutajaid ei kasutata.
+Rakendused, workerid ja haldusbackend kasutavad `fun_o` projektiga sama
+põhimustrit: ORDS-i HTTPS URL ning HTTP Basic autentimine. OAuth 2.0
+`client_credentials` voogu ja eraldi rakenduse- või halduspõhiseid ORDS-i
+kasutajaid ei kasutata.
 
-Kõigile liidestatud rakendustele ühine ORDS-i kasutajanimi ja parool:
+Kõigile ORDS-i klientidele ühine ORDS-i kasutajanimi ja parool:
 
 - asub rakenduse saladuste konfiguratsioonis;
 - ei kuulu Git-i;
 - ei lähe töö parameetritesse ega logidesse;
 - peab olema roteeritav.
 
+ORDS-i moodul `jobs.api` on seotud privilege'iga `jobs.api.auth`, mis nõuab
+Autonomous Database'i Basic autentimisega kasutajale antavat ORDS-i rolli
+`SQL Developer`.
+
 Rakendus saadab `application_code` väärtuse päringus. Oracle kontrollib, et kood on aktiivne ja töötüüp sellele lubatud, kuid ühine mandaat ei välista teise rakenduse koodi kasutamist. See on teadlikult aktsepteeritud risk.
 
 ### 22.2. Inimese haldusliides
 
-Google’i autentimine ja `.env`-is lubatud e-posti aadresside loend jäävad inimese haldusliidese jaoks eraldi mehhanismiks. Google’i identiteeti ei kasutata rakenduse worker’i autentimiseks.
+Google’i autentimine ja `.env`-is lubatud e-posti aadresside loend jäävad inimese
+haldusliidese jaoks eraldi mehhanismiks. Google’i identiteeti ei kasutata
+rakenduse worker’i autentimiseks. Google'iga autenditud haldusbackend kasutab
+ORDS-i kutsumiseks sama Basic-mandaati nagu rakendused ja workerid.
 
 ### 22.3. Oracle’i skeemid
 
@@ -727,7 +810,7 @@ Kõik andmebaasi või tegelikke tööfaile muutvad testid vajavad enne eraldi ka
 
 - kinnitada ühe või kahe skeemi mudel ja nimed;
 - lukustada tabelite ning olekute leping;
-- koostada ORDS OpenAPI leping;
+- koostada ja hoida ajakohasena rakenduste ORDS API kasutusleping;
 - koostada ühise HTTP Basic mandaadi ja `application_code` kontrolli leping;
 - kinnitada polling’u, heartbeat’i ja retry seadistus.
 
@@ -768,7 +851,7 @@ Kõik andmebaasi või tegelikke tööfaile muutvad testid vajavad enne eraldi ka
 
 ## 29. Avatud otsused
 
-Enne MVP1 implementatsiooni tuleb kinnitada:
+Enne MVP1 lõpetamist tuleb kinnitada:
 
 1. pollingu ja heartbeat’i 5-minutilise intervalli juhusliku hajutuse piir;
 2. heartbeat’i aegumise piir, mis ei vii tööd automaatselt aktiivsest olekust välja;
@@ -778,7 +861,6 @@ Enne MVP1 implementatsiooni tuleb kinnitada:
 6. kas töötüübipõhine maksimaalne tavapärane kestus on ainult hoiatus või mõjutab olekut;
 7. esimesed tegelikud töötüübid ja nende parameetrilepingud;
 8. logide, sündmuste ja lõpetatud tööde säilitamisajad;
-9. haldusliidese backendi ja ORDS-i haldusendpoint’ide täpne vastutuspiir.
 
 Tulevase MVPx wakeup-laienduse avatud otsused on:
 
