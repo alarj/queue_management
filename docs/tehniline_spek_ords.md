@@ -683,6 +683,19 @@ Minimalistliku haldusliidese nõuded jäävad samaks:
 
 Brauser ei suhtle Oracle’i tabelitega otse. Haldusveebi backend kontrollib Google’i sessiooni ja kasutab kaitstud ORDS-i haldusendpoint’e.
 
+Teostus asub projekti `backend/` kataloogis ning serveerib samast FastAPI
+konteinerist ka staatilise kasutajaliidese. Backend on Docker Compose’is
+ühendatud olemasoleva välise `funo_net` võrguga teenusena
+`queue_management_api`. Keskse nginx-i `haldus.fun-o.eu` HTTPS-serveriplokk
+suunab kogu liikluse sellele teenusele. Let’s Encrypti sertifikaat `fun-o.eu`
+katab ka `haldus.fun-o.eu` domeeni.
+
+Google’i lubatud aadresside loend on `GOOGLE_ALLOWED_EMAILS` muutujas ning
+Google’i klienditunnus `GOOGLE_CLIENT_ID` muutujas. Eduka Google’i ID-tokeni
+kontrolli järel loob backend `SESSION_SECRET`-iga signeeritud `HttpOnly`
+sessiooniküpsise. Haldustoimingu sündmuse `actor_id` tuleb sessiooni e-posti
+aadressist, mitte brauseri sisendist.
+
 ## 24. Võrk ja turvalisus
 
 - Rakenduste tööde esitamine, claim, heartbeat ja olekuteatamine liiguvad rakendusest otse ORDS-i HTTPS API-sse, mitte avaliku `haldus.fun-o.eu` rakenduste API kaudu.

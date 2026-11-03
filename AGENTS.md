@@ -120,6 +120,9 @@ Koostaja: AI (OpenAI Codex), kasutaja juhiste järgi. Esimene versioon kopeeriti
 - [`docs/api.md`](api.md) — lakooniline ORDS API kasutusjuhend liidestatavatele rakendustele ja workeritele.
 - [`docs/ords_api_testitulemused.md`](ords_api_testitulemused.md) — 3. novembri 2026 ORDS API tegelike smoke-testide tulemused.
 - [`.env.example`](.env.example) — ORDS-i ühenduse konfiguratsiooni mittesalajane näidis kõigi nõutud parameetritega.
+- [`docker-compose.yml`](../docker-compose.yml) — haldusveebi FastAPI teenus ja selle ühendus olemasoleva `funo_net` Docker-võrguga.
+- [`backend/app/main.py`](../backend/app/main.py) — Google’i sessiooni, haldus-API ja ORDS-i vahendav FastAPI backend.
+- [`backend/frontend/`](../backend/frontend/) — haldusliidese staatilised failid, mida backend samast konteinerist serveerib.
 - [`db/erd.md`](db/erd.md) — MVP1 Oracle'i füüsiline andmemudel, tabelite ja veergude kommentaarid ning terviklusreeglid.
 - [`db/schema/001_core_schema.sql`](db/schema/001_core_schema.sql) — `JOBS_APP` skeemi tabelite, sequence'ite, piirangute, indeksite ja kommentaaride loomise skript.
 - [`db/api/002_jobs_api_package.sql`](db/api/002_jobs_api_package.sql) — `JOBS_APP.PKG_JOBS_API` facade-pakett ja järjekorra äriloogika.
@@ -132,6 +135,7 @@ Koostaja: AI (OpenAI Codex), kasutaja juhiste järgi. Esimene versioon kopeeriti
 - `/home/ubuntu/fun_o/backend/app/main.py` — olemasoleva Google’i autentimise, sessiooni ning `ORDS_BASE_URL` + HTTP Basic ORDS-integratsiooni teostus; kasutada võrdlusmustrina, mitte pimesi kopeerida.
 - `/home/ubuntu/fun_o/db/oracle/ords/07_ords_handlers.sql` ja `/home/ubuntu/fun_o/db/oracle/security/06_grants_runtime.sql` — olemasoleva ORDS API skeemi, handlerite ja piiratud paketiõiguste näide.
 - `/home/ubuntu/fun_o/nginx/default.conf` ja `/home/ubuntu/fun_o/docker-compose.yml` — ühise nginx-serveri või Docker-võrguga liidestamise tegelik konfiguratsioon.
+- `/home/ubuntu/projektid/err_video_to_text/frontend_dist/assets/app.css` — haldusliidese CSS-i värvide, tüpograafia ja põhiliste komponentide võrdlus- ning lähtemuster.
 
 Registrit tuleb täiendada kohe, kui projektile lisandub README, lähtekood, andmeskeem, API leping, konteinerite kirjeldus või muu asjakohane allikas. Registrisse kuulumine ei anna allikale teiste ees ülimuslikkust.
 

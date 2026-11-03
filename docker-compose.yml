@@ -1,0 +1,17 @@
+services:
+  queue-management:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: queue_management_api
+    env_file:
+      - .env
+    expose:
+      - "8000"
+    restart: unless-stopped
+    networks:
+      - funo_net
+
+networks:
+  funo_net:
+    external: true
