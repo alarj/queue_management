@@ -837,17 +837,19 @@ CREATE OR REPLACE PACKAGE BODY pkg_jobs_api AS
         l_created_at jobs.created_at%TYPE;
         l_updated_at jobs.updated_at%TYPE;
         l_completed_at jobs.completed_at%TYPE;
+        l_started_at job_attempts.started_at%TYPE;
     BEGIN
         SELECT a.application_code, a.display_name,
                jt.job_type_code, jt.display_name,
                j.application_job_id, j.previous_job_id, j.status,
                j.queue_order, JSON_SERIALIZE(j.parameters_json RETURNING CLOB),
-               j.created_at, j.updated_at, j.completed_at
+               j.created_at, j.updated_at, j.completed_at,
+               (SELECT MAX(ja.started_at) FROM job_attempts ja WHERE ja.job_id = j.job_id)
           INTO l_application_code, l_application_name,
                l_job_type_code, l_job_type_name,
                l_application_job_id, l_previous_job_id, l_status,
                l_queue_order, l_parameters,
-               l_created_at, l_updated_at, l_completed_at
+               l_created_at, l_updated_at, l_completed_at, l_started_at
           FROM jobs j
           JOIN applications a ON a.application_id = j.application_id
           JOIN job_types jt ON jt.job_type_id = j.job_type_id
@@ -868,10 +870,11 @@ CREATE OR REPLACE PACKAGE BODY pkg_jobs_api AS
         ELSE l_result.put('updated_at', utc_text(l_updated_at)); END IF;
         IF l_completed_at IS NULL THEN l_result.put_null('completed_at');
         ELSE l_result.put('completed_at', utc_text(l_completed_at)); END IF;
+        IF l_started_at IS NULL THEN l_result.put_null('started_at');
+        ELSE l_result.put('started_at', utc_text(l_started_at)); END IF;
+        l_result.put('parameters', JSON_OBJECT_T.parse(l_parameters));
 
         IF p_include_details THEN
-            l_result.put('parameters', JSON_OBJECT_T.parse(l_parameters));
-
             FOR r IN (
                 SELECT attempt_number, worker_instance_id, host_id, boot_id,
                        claimed_at, started_at, last_heartbeat_at, ended_at,
@@ -943,6 +946,7 @@ CREATE OR REPLACE PACKAGE BODY pkg_jobs_api AS
         l_active JSON_OBJECT_T;
         l_queued JSON_ARRAY_T := JSON_ARRAY_T();
         l_held JSON_ARRAY_T := JSON_ARRAY_T();
+        l_completed JSON_ARRAY_T := JSON_ARRAY_T();
     BEGIN
         l_result.put_null('active_job');
         FOR r IN (
@@ -972,6 +976,15 @@ CREATE OR REPLACE PACKAGE BODY pkg_jobs_api AS
             l_held.append(admin_job_object(r.job_id, FALSE));
         END LOOP;
         l_result.put('held_jobs', l_held);
+
+        FOR r IN (
+            SELECT job_id FROM jobs
+             WHERE status IN ('SUCCEEDED', 'FAILED', 'INTERRUPTED', 'REMOVED')
+             ORDER BY completed_at DESC NULLS LAST, job_id DESC
+        ) LOOP
+            l_completed.append(admin_job_object(r.job_id, FALSE));
+        END LOOP;
+        l_result.put('completed_jobs', l_completed);
 
         o_http_status := 200;
         RETURN l_result.to_clob();

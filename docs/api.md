@@ -9,6 +9,7 @@ põhjal. Juhend on mõeldud liidestatavale rakendusele ja selle workerile.
 
 - [3. Ühendus](#3-ühendus)
 - [4. Endpoint’id](#4-endpointid)
+- [4.1.1. Informatiivsed tööparameetrid](#411-informatiivsed-tööparameetrid)
 - [5. Workeri töövoog](#5-workeri-töövoog)
 - [6. Vead ja korduskatsed](#6-vead-ja-korduskatsed)
 
@@ -24,26 +25,89 @@ Soovituslik konfiguratsioon:
 
 ```dotenv
 ORDS_BASE_URL=https://GAEA57CDC53A00B-WOQC8AR450A6CUM0.adb.eu-frankfurt-1.oraclecloudapps.com/ords/jobs
-ORDS_USERNAME=
-ORDS_PASSWORD=
+ORDS_OAUTH_CLIENT_ID=
+ORDS_OAUTH_CLIENT_SECRET=
 ```
 
 Projekti juurkausta [`.env.example`](../.env.example) sisaldab kõiki nõutud
-parameetreid ilma saladuse väärtuseta. Kopeeri see lokaalseks `.env` failiks ja
-lisa `ORDS_PASSWORD` väärtus serveris käsitsi. `.env` on Gitist välistatud.
+parameetreid ilma saladuse väärtuseta. `.env` on Gitist välistatud.
+
+### 3.1. OAuth-kliendi loomine
+
+Keskse süsteemi haldur loob iga API-kutsuja jaoks eraldi OAuth-kliendi,
+käivitades `JOBS_API` skeemis
+[`db/ords/006_create_oauth_client.sql`](../db/ords/006_create_oauth_client.sql).
+Olemasoleva Basic-autentimisega paigalduse puhul tuleb enne seda käivitada
+[`db/ords/005_oauth_authentication.sql`](../db/ords/005_oauth_authentication.sql).
+
+Skript küsib kolm väärtust:
+
+- kliendi nimi, näiteks `ttu_loeng` või `queue_management_admin`;
+- kliendi saladus, mille rakenduse haldur genereerib ja salvestab oma `.env`-i;
+- kontakt-e-post.
+
+Skript prindib välja `ORDS_OAUTH_CLIENT_ID` väärtuse. Koos sisestatud
+`ORDS_OAUTH_CLIENT_SECRET` väärtusega tuleb see panna ainult vastava
+rakenduse `.env`-i. Igal rakendusel ja kesksel haldusbackendil on eri klient.
+
+### 3.2. Tokeni küsimine ja kasutamine
+
+Klient küsib tokeni käivitumisel või pärast eelmise tokeni aegumist:
+
+```http
+POST /oauth/token
+Authorization: Basic base64(client_id:client_secret)
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials
+```
+
+See on ainus OAuth-päring, kus kasutatakse HTTP Basic päist. Vastus sisaldab
+vähemalt `access_token` ja `expires_in`; meie kliendi tokeni kehtivus on 3600
+sekundit. Klient hoiab tokenit ainult mälus ja küsib uue 60 sekundit enne
+aegumist. `client_credentials` voog ei kasuta refresh tokenit.
+
+Kõik järjekorra API päringud kasutavad tokenit:
+
+```http
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+Kui API tagastab `401`, küsib klient ühe korra uue tokeni ja kordab sama
+päringut. Kui ka teine päring tagastab `401`, tuleb käsitleda seda
+autentimisveana.
 
 Liidestatav rakendus lisab oma konfiguratsiooni ka registreeritud
-`application_code` väärtuse. Kõik päringud kasutavad HTTP Basic autentimist.
-Kui rakendusel on oma Oracle'i skeem, kasutatakse selle skeemi ORDS-is
-REST-enable'itud kasutajat; oma skeemita rakenduse jaoks kasutatakse
-`JOBS_API` kasutajat. Kasutajanimi ja parool tulevad rakenduse saladuste
-konfiguratsioonist.
-JSON-päringute päis on `Content-Type: application/json`.
+`application_code` väärtuse. OAuth-klient tõendab API-kutsuja mandaadi, kuid
+MVP1 ei seo seda automaatselt `application_code` väärtusega. Oracle kontrollib
+siiski, et `application_code` ja `job_type_code` on registreeritud.
 
-Ilma kehtiva Basic mandaadita tagastab ORDS `401 Unauthorized`.
+Ilma kehtiva Bearer tokenita tagastab ORDS `401 Unauthorized`.
 
-Rakendus saadab igas päringus oma registreeritud `application_code` väärtuse.
-Praegune ORDS-i moodul ei seo Basic-kasutajat automaatselt selle väärtusega.
+### 3.3. Python `httpx` näidis
+
+```python
+import time
+import httpx
+
+token = None
+token_expires_at = 0
+
+async def authorization_header(client: httpx.AsyncClient) -> dict[str, str]:
+    global token, token_expires_at
+    if not token or time.time() >= token_expires_at:
+        response = await client.post(
+            f"{ORDS_BASE_URL}/oauth/token",
+            auth=(ORDS_OAUTH_CLIENT_ID, ORDS_OAUTH_CLIENT_SECRET),
+            data={"grant_type": "client_credentials"},
+        )
+        response.raise_for_status()
+        body = response.json()
+        token = body["access_token"]
+        token_expires_at = time.time() + int(body["expires_in"]) - 60
+    return {"Authorization": f"Bearer {token}"}
+```
 
 ## 4. Endpoint’id
 
@@ -70,6 +134,25 @@ töö. Vastus:
 ```json
 {"job_id":123,"status":"QUEUED"}
 ```
+
+#### 4.1.1. Informatiivsed tööparameetrid
+
+`parameters` on töötüübi lepinguga valideeritav JSON-objekt. Lisaks workeri
+tegelikele sisenditele võib liidestatav rakendus sinna panna ohutu,
+inimloetava hetkeseisu haldusvaate jaoks. Näiteks loengutöötleja saadab:
+
+```json
+"parameters": {
+  "lecture_processing_id": 123,
+  "lecture_title": "Loengu pealkiri",
+  "lecture_start_at": "2026-11-01T10:00:00Z"
+}
+```
+
+Informatiivne väärtus ei tohi sisaldada saladust, shellikäsku ega
+failisüsteemiteed. Worker ei tohi selle põhjal muuta täitmisloogikat: ta loeb
+autoriteetse töö konteksti rakenduse enda püsivast olekust tehnilise ID abil.
+Haldusliides võib neid välju kasutada töö nime ja kuupäeva kuvamiseks.
 
 ### 4.2. Töö olek
 

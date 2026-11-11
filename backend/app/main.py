@@ -1,4 +1,4 @@
-import base64, hashlib, hmac, json, os, time
+import asyncio, base64, hashlib, hmac, json, os, time
 from pathlib import Path
 from typing import Any
 import httpx
@@ -8,8 +8,8 @@ from pydantic import BaseModel
 
 class Settings:
     ords_base_url = os.getenv("ORDS_BASE_URL", "").rstrip("/")
-    ords_username = os.getenv("ORDS_USERNAME", "")
-    ords_password = os.getenv("ORDS_PASSWORD", "")
+    ords_oauth_client_id = os.getenv("ORDS_OAUTH_CLIENT_ID", "")
+    ords_oauth_client_secret = os.getenv("ORDS_OAUTH_CLIENT_SECRET", "")
     google_client_id = os.getenv("GOOGLE_CLIENT_ID", "").strip()
     google_allowed_emails = {x.strip().lower() for x in os.getenv("GOOGLE_ALLOWED_EMAILS", "").split(",") if x.strip()}
     session_secret = os.getenv("SESSION_SECRET", "")
@@ -19,6 +19,9 @@ app = FastAPI(title="Queue management", docs_url=None, redoc_url=None)
 frontend_dir = Path(__file__).resolve().parents[1] / "frontend"
 cookie_name = "queue_management_session"
 actions = {"move-up", "move-down", "move-first", "move-last", "hold", "resume", "remove"}
+ords_access_token_value = ""
+ords_access_token_expires_at = 0.0
+ords_token_lock = asyncio.Lock()
 
 class GoogleLogin(BaseModel): id_token: str
 def fail(http_status: int, code: str, message: str, headers: dict[str, str] | None = None): raise HTTPException(http_status, {"error_code": code, "message": message}, headers=headers)
@@ -40,11 +43,56 @@ def session_email(request: Request) -> str:
         return payload["email"]
     except (KeyError, TypeError, ValueError, json.JSONDecodeError): fail(401, "UNAUTHENTICATED", "Google sign-in is required")
 
+async def get_ords_access_token() -> str:
+    global ords_access_token_value, ords_access_token_expires_at
+    if not all((settings.ords_base_url, settings.ords_oauth_client_id, settings.ords_oauth_client_secret)):
+        fail(500, "CONFIG_ERROR", "ORDS OAuth connection is not configured")
+    if ords_access_token_value and time.time() < ords_access_token_expires_at:
+        return ords_access_token_value
+    async with ords_token_lock:
+        if ords_access_token_value and time.time() < ords_access_token_expires_at:
+            return ords_access_token_value
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.post(
+                    f"{settings.ords_base_url}/oauth/token",
+                    auth=(settings.ords_oauth_client_id, settings.ords_oauth_client_secret),
+                    data={"grant_type": "client_credentials"},
+                )
+        except httpx.RequestError:
+            fail(502, "ORDS_UNREACHABLE", "ORDS is unavailable")
+        if response.status_code >= 400:
+            fail(502, "ORDS_OAUTH_FAILED", "ORDS OAuth token request failed")
+        try:
+            token_response = response.json()
+            token = str(token_response["access_token"])
+            expires_in = int(token_response["expires_in"])
+        except (KeyError, TypeError, ValueError):
+            fail(502, "ORDS_OAUTH_INVALID_RESPONSE", "ORDS OAuth token response is invalid")
+        if not token or expires_in <= 60:
+            fail(502, "ORDS_OAUTH_INVALID_RESPONSE", "ORDS OAuth token response is invalid")
+        ords_access_token_value = token
+        ords_access_token_expires_at = time.time() + expires_in - 60
+        return ords_access_token_value
+
 async def ords(method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
-    if not all((settings.ords_base_url, settings.ords_username, settings.ords_password)): fail(500, "CONFIG_ERROR", "ORDS connection is not configured")
-    try:
-        async with httpx.AsyncClient(timeout=20) as client: response = await client.request(method, f"{settings.ords_base_url}/{path}", auth=(settings.ords_username, settings.ords_password), json=payload if method == "POST" else None)
-    except httpx.RequestError: fail(502, "ORDS_UNREACHABLE", "ORDS is unavailable")
+    global ords_access_token_value, ords_access_token_expires_at
+    for attempt in range(2):
+        token = await get_ords_access_token()
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                response = await client.request(
+                    method,
+                    f"{settings.ords_base_url}/{path}",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json=payload if method == "POST" else None,
+                )
+        except httpx.RequestError:
+            fail(502, "ORDS_UNREACHABLE", "ORDS is unavailable")
+        if response.status_code != 401 or attempt == 1:
+            break
+        ords_access_token_value = ""
+        ords_access_token_expires_at = 0.0
     if response.status_code == 429:
         retry_after = response.headers.get("Retry-After"); fail(429, "ORDS_RATE_LIMITED", "ORDS rate limit", {"Retry-After": retry_after} if retry_after else None)
     if response.status_code >= 400:

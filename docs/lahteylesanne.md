@@ -79,13 +79,12 @@ Lahendus peab:
 
 ### 6.2. Rakendused ja workerid
 
-- Keskne haldusbackend kasutab ORDS-i kutsumiseks `JOBS_API` HTTP Basic kasutajat.
-- Kui liidestataval rakendusel on oma Oracle'i skeem, kasutab rakendus ja tema worker ORDS-is oma skeemi kasutajat. Selleks peab kasutaja olema ORDS-is REST-enable'itud ning talle peab olema antud mooduli `jobs.api` kasutamiseks vajalik ORDS-i roll.
-- Oma skeemita rakenduse jaoks võib kasutada `JOBS_API` kasutajat.
-- ORDS-i baas-URL, kasutajanimi ja parool tulevad `.env`-ist või muust saladuste hoidlast.
-- OAuth 2.0 `client_credentials` voogu ei kasutata.
+- Rakendus, worker ja keskne haldusbackend kasutavad ORDS-i OAuth 2.0 `client_credentials` voogu.
+- Igal ORDS-i kliendil on oma `client_id` ja `client_secret`; need tulevad `.env`-ist või muust saladuste hoidlast.
+- OAuth-klient ei ole Oracle'i skeemikasutaja ega vaja `JOBS_APP` tabeli- või paketiõigusi.
+- Access token kehtib 3600 sekundit. Klient hoiab tokenit mälus ning küsib uue enne aegumist.
 - Rakendus saadab igas asjakohases päringus oma registreeritud `application_code` tunnuse.
-- `application_code` on kliendi deklareeritud tunnus, mitte praeguse ORDS-i mooduli poolt autentimisega seotud identiteet. Oma skeemi kasutamine ei muuda seda seost automaatseks.
+- `application_code` on kliendi deklareeritud tunnus, mitte OAuth-kliendiga seotud identiteet.
 - Oracle kontrollib siiski, et `application_code` on registreeritud ja aktiivne ning esitatud `job_type` on sellele rakendusele lubatud.
 
 ## 7. Põhikasutusjuht
@@ -171,7 +170,7 @@ Rakenduste mahukad tööfailid, ajutised failid, täielikud protsessilogid ja v�
 - Järjekorra tõeallikas peab olema üheselt määratud ja pärast taaskäivitust taastatav.
 - Töö esitamine peab olema korduskindel, et võrgukatse kordamine ei looks tahtmatult duplikaattööd.
 - Ajad salvestatakse UTC-s ja kuvatakse kasutaja lokaalses ajavööndis.
-- Saladusi, Google’i lubatud aadresse, ORDS-i kasutajanime ega parooli ega küpsiste signeerimisvõtmeid ei salvestata Git-i või logidesse.
+- Saladusi, Google’i lubatud aadresse, ORDS-i OAuth-kliendi tunnuseid ega küpsiste signeerimisvõtmeid ei salvestata Git-i või logidesse.
 - `.env.example` võib sisaldada ainult muutuja nimesid ja mittesalajasi näidisväärtusi.
 - Taaskäivitus ei tohi muuta `hold`-olekus tööd automaatselt käivitatavaks.
 - Kasutajaliides ei tohi lubada toimingut, mida backend ei suuda ohutult lõpuni viia.
@@ -221,7 +220,7 @@ Esimene versioon loetakse vastuvõetuks, kui:
 14. heartbeat’i aegumine või ebaselge sama buudi olukord ei käivita teist rasket tööd;
 15. `429` või ajutise võrgutõrke järel kordab klient päringut kasvava ooteajaga ega loo duplikaattööd või uut täitmiskatset;
 16. rakendus ei saa saata suvalist käivitatavat käsku;
-17. ORDS-i Basic-autentimine töötab `JOBS_API` haldusmandaadi või rakenduse oma ORDS-i kasutajaga ning Oracle valideerib kliendi saadetud `application_code` ja selle lubatud töötüübi;
+17. ORDS-i OAuth `client_credentials` autentimine töötab eraldi klienditunnustega ning Oracle valideerib kliendi saadetud `application_code` ja selle lubatud töötüübi;
 18. ORDS-i rakenduste ja workerite API ei ole avalikust internetist ega `haldus.fun-o.eu` kaudu kättesaadav;
 19. saladusi ega lubatud Google’i e-posti aadresse ei leidu repositooriumi jälgitavates failides.
 

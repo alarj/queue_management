@@ -218,7 +218,7 @@ Adapter on rakenduse ja töötüübi leping. See määrab:
 | Mahukad sisendid, ajutised failid ja väljundid | vastava rakenduse runtime |
 | Täielik protsessilogi | vastava rakenduse runtime/logikataloog |
 | Google’i lubatud e-posti aadressid | serveri saladuste konfiguratsioon |
-| ORDS-i Basic-autentimise kasutajanimi ja parool | vastava kliendi saladuste konfiguratsioon ja ORDS |
+| ORDS-i OAuth-kliendi tunnused | vastava kliendi saladuste konfiguratsioon ja ORDS |
 
 Rakendus ei pea hoidma oma ootel tööde kohalikku koopiat. Oracle on ainus autoriteetne allikas selle kohta, millise rakenduse töö on järjekorra ees ja kas seda saab käivitada.
 
@@ -249,7 +249,13 @@ Rakendus esitab ORDS-ile vähemalt:
 järjekorda ei peeta; väli võimaldab rakendusel ja workeril siduda Oracle'i keskse
 `job_id` rakenduse enda töödeldava protsessi või tegevusega.
 
-Keskne haldusbackend kasutab `JOBS_API` ORDS-i kasutajat. Kui liidestataval rakendusel on oma Oracle'i skeem, kasutab rakendus ja tema worker ORDS-is oma skeemi kasutajat; oma skeemita rakenduse jaoks võib kasutada `JOBS_API` kasutajat. `application_code` tuleb päringu sisust ning praegune ORDS-i moodul ei seo seda autentitud kasutajaga automaatselt. Oracle kontrollib siiski, et kood on registreeritud ja aktiivne ning töötüüp sellele lubatud.
+`parameters` võib sisaldada tööliigi valideeritud täitmissisendite kõrval ka
+ohutut informatiivset hetkeseisu haldusvaatele, näiteks loengu nime ja UTC
+algusaega. See ei ole workeri käsk ega autoriteetne töö kontekst: worker kasutab
+endiselt `application_job_id` või tööliigi tehnilist identifikaatorit ning oma
+rakenduse püsivat olekut.
+
+Keskne haldusbackend ja iga liidestatud rakendus kasutavad sama ORDS-i API-t oma OAuth-kliendiga. `application_code` tuleb päringu sisust ning praegune ORDS-i moodul ei seo seda OAuth-kliendiga automaatselt. Oracle kontrollib siiski, et kood on registreeritud ja aktiivne ning töötüüp sellele lubatud.
 
 Oracle’i toiming ühe transaktsiooni piires:
 
@@ -453,6 +459,11 @@ Oracle teostab samas autoriteetses järjekorras järgmised toimingud:
 - `resume`, mis lisab töö järjekorra lõppu;
 - käivitumata töö eemaldamine.
 
+Haldusvaade kuvab eraldi töötluses oleva, järjekorras oleva ja ootel oleva töö
+ning vaikimisi suletud „Tehtud tööd” jaotises kõik lõppolekuga tööd. Iga töö
+juures kuvatakse olemasolul tegelik algusaeg, eelmise töö `job_id` ning
+rakenduse saadetud informatiivne nimetus ja kuupäev.
+
 Toiming lukustab mõjutatud read ja kontrollib nende tegelikku hetkeseisu. Kui toiming ei ole enam lubatud, tagastatakse konflikt ja muudatust ei rakendata.
 
 Kui hold- või eemaldamistoiming võistleb claim’iga, otsustab Oracle’i transaktsiooniline lukk, kumb toiming sai esimesena õiguse. Juba `CLAIMED` või `RUNNING` tööd ei muudeta hold-toiminguga töötava töö katkestamiseks.
@@ -628,43 +639,50 @@ Muutva halduspäringu JSON-keha sisaldab välja `actor_id`, mille väärtuseks p
 haldusbackend Google'iga autenditud kasutaja e-posti aadressi. Eemaldamise
 kinnituse küsib kasutajaliides enne ORDS-i väljakutset.
 
-Rakenduse ja workeri päring sisaldab `application_code` väärtust. Endpoint’id tagastavad ainult selle deklareeritud rakenduse jaoks vajaliku minimaalse andmehulga. Praegune ORDS-i Basic-autentimine ei seo kasutajat automaatselt `application_code` väärtusega.
+Rakenduse ja workeri päring sisaldab `application_code` väärtust. Endpoint’id tagastavad ainult selle deklareeritud rakenduse jaoks vajaliku minimaalse andmehulga. OAuth-klient ei seo praeguses MVP-s oma identiteeti automaatselt `application_code` väärtusega.
 
 ## 22. Autentimine ja õigused
 
-### 22.1. ORDS-i kasutaja
+### 22.1. ORDS-i OAuth-kliendid
 
-Rakendused, workerid ja haldusbackend kasutavad `fun_o` projektiga sama
-põhimustrit: ORDS-i HTTPS URL ning HTTP Basic autentimine. OAuth 2.0
-`client_credentials` voogu ei kasutata.
+Rakendused, workerid ja haldusbackend kasutavad ORDS-i HTTPS URL-i ning OAuth
+2.0 `client_credentials` voogu. `JOBS_API` jääb ORDS-is base path'iga `jobs`
+avaldatud REST-fassaadi skeemiks, kuid seda kasutajat ei kasutata rakenduse
+konfiguratsioonis autentimiseks.
 
-`JOBS_API` on ORDS-i avaldatud fassaadi skeem ning keskse haldusbackendi
-ORDS-i kasutaja. Kui liidestataval rakendusel on oma Oracle'i skeem, kasutab
-rakendus ja tema worker ORDS-i jaoks oma skeemi kasutajat. Sellel kasutajal
-peab olema ORDS-i REST-enable ning õigus moodulile `jobs.api`; praeguses
-teostuses annab selle privilege `jobs.api.auth` kaudu ORDS-i roll `SQL Developer`.
+Juba juurutatud Basic-autentimisega moodul migreeritakse esmalt skriptiga
+[`db/ords/005_oauth_authentication.sql`](../db/ords/005_oauth_authentication.sql).
+Uus paigaldus saab OAuth-kaitse juba skriptist
+[`db/ords/004_ords_handlers.sql`](../db/ords/004_ords_handlers.sql).
 
-Rakenduse oma ORDS-i kasutaja ei vaja `JOBS_APP` tabeli- ega paketiõigusi:
-handler käivitub `JOBS_API` skeemis ja kutsub sealt `JOBS_APP` facade-paketti.
-Oma skeemita rakenduse jaoks võib kasutada `JOBS_API` kasutajat.
+Iga API-kutsuja saab eraldi OAuth-kliendi, millel on:
 
-Iga ORDS-i kasutajanimi ja parool:
+- `client_id`;
+- `client_secret`;
+- ORDS-i roll `jobs.api.client`;
+- 3600-sekundiline access token.
 
-- asub vastava kliendi saladuste konfiguratsioonis;
-- ei kuulu Git-i;
-- ei lähe töö parameetritesse ega logidesse;
-- peab olema roteeritav.
+OAuth-klientide loomise skript on
+[`db/ords/006_create_oauth_client.sql`](../db/ords/006_create_oauth_client.sql).
+See käivitatakse `JOBS_API` skeemis. Skript väljastab ainult `client_id`; klient
+annab `client_secret` ise sisendina ning salvestab selle oma `.env`-i.
+
+Klient küsib tokeni aadressilt `/ords/jobs/oauth/token`, kasutades tokenipäringu
+HTTP Basic päises oma `client_id` ja `client_secret` väärtust. Edasised API-
+päringud saadetakse päisega `Authorization: Bearer <access_token>`. Tokenit ei
+küsita iga päringu eel: worker või backend hoiab seda mälus ja küsib uue enne
+aegumist.
 
 Rakendus saadab `application_code` väärtuse päringus. Oracle kontrollib, et
-kood on aktiivne ja töötüüp sellele lubatud. Praegune ORDS-i moodul ei seo
-autenditud kasutajat automaatselt `application_code` väärtusega.
+kood on aktiivne ja töötüüp sellele lubatud. OAuth-kliendi identiteeti ei seota
+MVP-s eraldi `application_code` väärtusega.
 
 ### 22.2. Inimese haldusliides
 
 Google’i autentimine ja `.env`-is lubatud e-posti aadresside loend jäävad inimese
 haldusliidese jaoks eraldi mehhanismiks. Google’i identiteeti ei kasutata
 rakenduse worker’i autentimiseks. Google'iga autenditud haldusbackend kasutab
-ORDS-i kutsumiseks `JOBS_API` Basic-mandaati.
+ORDS-i jaoks oma OAuth-klienti.
 
 ### 22.3. Oracle’i skeemid
 
@@ -707,8 +725,8 @@ aadressist, mitte brauseri sisendist.
 
 - Rakenduste tööde esitamine, claim, heartbeat ja olekuteatamine liiguvad rakendusest otse ORDS-i HTTPS API-sse, mitte avaliku `haldus.fun-o.eu` rakenduste API kaudu.
 - ORDS-i URL ei ole avalikust internetist kättesaadav; ligipääsu piirab Oracle Cloudi taseme võrgu-ACL.
-- ORDS-i Basic-autentimise mandaat on täiendav rakendustaseme kaitse, mitte võrgu-ACL-i asendus.
-- Keskne haldusbackend kasutab `JOBS_API` mandaati. Oma Oracle'i skeemiga rakendus võib kasutada oma ORDS-i kasutajat; `application_code` jääb siiski kliendi deklareeritud väärtuseks.
+- ORDS-i OAuth-klient on täiendav rakendustaseme kaitse, mitte võrgu-ACL-i asendus.
+- Keskne haldusbackend ja iga liidestatud rakendus kasutavad eri OAuth-klienti; `application_code` jääb siiski kliendi deklareeritud väärtuseks.
 - Kõik töö parameetrid valideeritakse Oracle’i paketis töötüübi lepingu järgi.
 - Saladusi ei kirjutata Oracle’i sündmustesse, URL-idesse, rakenduslogidesse ega Git-i.
 - Brauser ei suhtle ORDS-i rakenduste või workerite endpoint’idega otse.
@@ -770,7 +788,7 @@ Kadunud või aegunud heartbeat ei vii tööd aktiivsest olekust välja. See või
 ### 27.2. Skeemi- ja ORDS-i PoC
 
 - tootmisele kavandatud piiratud skeemi õigused;
-- `JOBS_API` haldusmandaat ning oma skeemiga rakenduse ORDS-i kasutaja;
+- OAuth-kliendi loomine, tokeni küsimine ja `jobs.api.client` roll;
 - Oracle Cloudi võrgu-ACL-i tegelik ligipääsupiirang;
 - kliendi saadetud `application_code` ja selle lubatud töötüübi kontroll;
 - keelatud töötüübi tagasilükkamine.
@@ -835,7 +853,7 @@ Kõik andmebaasi või tegelikke tööfaile muutvad testid vajavad enne eraldi ka
 - kinnitada ühe või kahe skeemi mudel ja nimed;
 - lukustada tabelite ning olekute leping;
 - koostada ja hoida ajakohasena rakenduste ORDS API kasutusleping;
-- koostada `JOBS_API` haldusmandaadi, rakenduse oma ORDS-i kasutaja ning `application_code` kontrolli leping;
+- koostada OAuth-klientide, tokeni uuendamise ja `application_code` kontrolli leping;
 - kinnitada polling’u, heartbeat’i ja retry seadistus.
 
 ### Etapp 2 — Oracle’i järjekorra PoC
@@ -900,6 +918,6 @@ Tulevase MVPx wakeup-laienduse avatud otsused on:
 - [Oracle: Call Web Services from Autonomous AI Database](https://docs.oracle.com/en-us/iaas/autonomous-database-serverless/doc/call-web-services.html) — `UTL_HTTP`, võrgu-ACL ja avaliku või privaatse sihthosti nõuded.
 - [Oracle: PL/SQL Package Notes for Autonomous AI Database](https://docs.oracle.com/en/cloud/paas/autonomous-json-database/ajdug/autonomous-plsql-packages.html) — `DBMS_SCHEDULER` ja `UTL_HTTP` piirangud Autonomous Database’is.
 - [Oracle REST Data Services: Developing REST Applications](https://docs.oracle.com/en/database/oracle/oracle-rest-data-services/26.3/orddg/developing-REST-applications.html) — ORDS moodulid, handlerid ja REST-rakenduste teostus.
-- `/home/ubuntu/fun_o/backend/app/main.py` — kontrollitud `ORDS_BASE_URL`, `ORDS_USERNAME`, `ORDS_PASSWORD` ja HTTP Basic päringumuster.
+- `/home/ubuntu/fun_o/backend/app/main.py` — olemasoleva Google'i autentimise, sessiooni ja ORDS-integratsiooni võrdlusmuster.
 - `/home/ubuntu/fun_o/db/oracle/ords/07_ords_handlers.sql` ning `/home/ubuntu/fun_o/db/oracle/security/06_grants_runtime.sql` — kontrollitud ORDS API skeemi ja pakettide `EXECUTE` õiguste muster.
 - [Linux kernel documentation: `/proc/sys/kernel/random/boot_id`](https://docs.kernel.org/admin-guide/sysctl/kernel.html#random) — buudi identifikaatori omadus.

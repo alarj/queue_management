@@ -34,6 +34,11 @@ ja Dockeris töötava haldusliidese tegelike päringute tulemuste põhjal.
 | TLS-sertifikaat | `haldus.fun-o.eu` on sertifikaadis; kehtib kuni 1.02.2027 11:45 UTC |
 | Avalik HTTPS | `https://haldus.fun-o.eu/` ja `/styles.css` tagastasid `200 OK` |
 | Google'i konfiguratsioon | `/api/auth/google/config` tagastas aktiivse klienditunnuse |
+| OAuth-backendi simulatsioon | tokeni küsimine, Bearer-päring ja `401` järel tokeni uuendamine õnnestusid ajutises Docker-konteineris |
+| ORDS OAuth token | `client_credentials` tokenipäring õnnestus; `expires_in=3600` |
+| ORDS OAuth Bearer-päring | `GET /admin/queue` tagastas `200 OK` |
+| Haldusbackend OAuth-ahel | konteineri `/api/admin/queue` tagastas ajutise kohaliku sessiooniga `200 OK` |
+| TTÜ OAuth-klient | `ttu_loeng` klient sai 3600-sekundilise tokeni ning `GET /admin/queue` tagastas `200 OK` |
 
 Esimese ORDS smoke-testi lõpus oli järjekord tühi. Selle käigus lisati
 rakendus `api_smoke_test`, töötüüp `smoke_test_job` ja tööd ID-dega `1` kuni
@@ -42,6 +47,10 @@ ID-dega `7` kuni `11`; muid võimalikke järjekorrakirjeid test ei muutnud.
 
 Smoke-test ei katnud tegeliku adapteri OS-protsessi, hosti restarti,
 heartbeat'i aegumist, 429 vastust ega samaaegsete workerite claim'i.
+
+OAuth-testiks käivitati `JOBS_API` skeemis käsitsi
+`005_oauth_authentication.sql`, loodi haldusbackendi klient skriptiga
+`006_create_oauth_client.sql` ning selle tunnused lisati haldusbackendi `.env`-i.
 
 Google'i välise sisselogimise testi ei tehtud, sest serveri `.env`-is puuduvad
 veel `GOOGLE_CLIENT_ID` ja `SESSION_SECRET`. Haldusbackend'i autenditud
