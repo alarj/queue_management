@@ -128,6 +128,8 @@ Koostaja: AI (OpenAI Codex), kasutaja juhiste järgi. Esimene versioon kopeeriti
 - [`db/api/002_jobs_api_package.sql`](db/api/002_jobs_api_package.sql) — `JOBS_APP.PKG_JOBS_API` facade-pakett ja järjekorra äriloogika.
 - [`db/security/003_grant_jobs_api.sql`](db/security/003_grant_jobs_api.sql) — facade-paketi `EXECUTE` õigus `JOBS_API` skeemile.
 - [`db/ords/004_ords_handlers.sql`](db/ords/004_ords_handlers.sql) — `JOBS_API` skeemi ORDS endpoint’id.
+- [`db/ords/005_oauth_authentication.sql`](db/ords/005_oauth_authentication.sql) — juba avaldatud `jobs.api` mooduli OAuth-kaitseks migreerimise skript.
+- [`db/ords/006_create_oauth_client.sql`](db/ords/006_create_oauth_client.sql) — ühe rakenduse või haldusbackendi OAuth-kliendi loomise skript.
 - [`docs/tehniline_spek.md`](tehniline_spek.md) — kõrvale heidetud Jenkinsi-põhine variant, mis säilib võrdlus- ja ajaloomaterjalina.
 
 ### Lähte- ja võrdlusmaterjalid
