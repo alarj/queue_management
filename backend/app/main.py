@@ -138,7 +138,7 @@ async def admin_action(job_id: int, action: str, request: Request):
     if action not in actions: fail(404, "NOT_FOUND", "Unknown action")
     return await ords("POST", f"admin/jobs/{job_id}/{action}", {"actor_id": session_email(request)})
 @app.get("/")
-async def index(): return FileResponse(frontend_dir / "index.html")
+async def index(): return FileResponse(frontend_dir / "index.html", headers={"Cache-Control": "no-cache"})
 @app.get("/{asset_path:path}")
 async def asset(asset_path: str):
     candidate = (frontend_dir / asset_path).resolve()

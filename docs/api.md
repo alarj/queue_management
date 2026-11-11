@@ -11,6 +11,7 @@ põhjal. Juhend on mõeldud liidestatavale rakendusele ja selle workerile.
 - [4. Endpoint’id](#4-endpointid)
 - [4.1.1. Informatiivsed tööparameetrid](#411-informatiivsed-tööparameetrid)
 - [5. Workeri töövoog](#5-workeri-töövoog)
+- [5.1. Claim'itud töö puudub kohalikust rakendusest](#51-claimitud-töö-puudub-kohalikust-rakendusest)
 - [6. Vead ja korduskatsed](#6-vead-ja-korduskatsed)
 
 ## 3. Ühendus
@@ -212,7 +213,9 @@ POST /worker/claim
 }
 ```
 
-Worker valib adapteri ainult `job_type_code` järgi.
+Worker valib adapteri ainult `job_type_code` järgi. `parameters` sisaldab
+töötüübi tehnilist identifikaatorit ning võib sisaldada ka jaotises 4.1.1
+kirjeldatud informatiivseid välju; need ei ole workeri käsk.
 
 ### 4.5. Käivitamise kinnitus
 
@@ -268,10 +271,47 @@ POST /worker/jobs/123/complete
 2. Kutsu `/worker/startup`.
 3. Kui vana aktiivne töö tagastatakse, kontrolli selle protsessi tegelikku olekut.
 4. Jõudeolekus kutsu `/worker/claim` kohe ja seejärel iga 5 minuti järel.
-5. Käivita vastuse `job_type_code` adapter `parameters` väärtustega.
+5. Leia `application_job_id` ja töötüübi tehnilise identifikaatori abil
+   rakenduse enda püsivast olekust autoriteetne töökontekst. Kontrolli enne
+   protsessi käivitamist, et töötüüp ja tehniline identifikaator vastavad
+   claim'i väärtustele.
 6. Saada `/start`, seejärel heartbeat iga 5 minuti järel.
 7. Saada lõpus `/complete`.
 8. Töötav worker uut tööd ei claim’i.
+
+### 5.1. Claim'itud töö puudub kohalikust rakendusest
+
+Claim on ORDS-i autoriteetne käivitamisluba, kuid rakendus võib olla enne
+claim'i kohaliku töö kirje sulgenud, kaotanud või teise versiooniga asendanud.
+Worker ei tohi sellisel juhul jääda tõrkelõputult sama tööd proovima ega anda
+lihtsalt protsessiviga, sest see blokeeriks kogu ühise järjekorra.
+
+Kui worker ei leia `application_job_id` järgi aktiivset kohalikku töökonteksti,
+ei käivita ta protsessi ega saada `/start`. Ta märgib ORDS-is claim'itud töö
+lõpetatuks:
+
+```http
+POST /worker/jobs/123/complete
+```
+
+```json
+{
+  "application_code": "err_video_to_text",
+  "execution_token": "claimi-token",
+  "worker_instance_id": "worker-20261103-001",
+  "host_id": "ubuntu-main",
+  "boot_id": "linux-boot-id",
+  "outcome": "INTERRUPTED",
+  "exit_code": 0,
+  "end_reason": "APPLICATION_OPERATION_NOT_FOUND"
+}
+```
+
+See on kontrollitud töökatkestus, mitte õnnestumine: ORDS talletab põhjuse ja
+saab järgmist tööd edasi pakkuda. Sama põhimõte kehtib ka valede või puuduvate
+tehniliste parameetrite ja sobimatu töötüübi puhul, kuid nende korral tuleb
+töö lõpetada `FAILED`-olekuga ning selge põhjusega, näiteks
+`INVALID_PARAMETERS` või `INVALID_JOB_TYPE`.
 
 ## 6. Vead ja korduskatsed
 

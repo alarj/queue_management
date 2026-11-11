@@ -462,7 +462,24 @@ Oracle teostab samas autoriteetses järjekorras järgmised toimingud:
 Haldusvaade kuvab eraldi töötluses oleva, järjekorras oleva ja ootel oleva töö
 ning vaikimisi suletud „Tehtud tööd” jaotises kõik lõppolekuga tööd. Iga töö
 juures kuvatakse olemasolul tegelik algusaeg, eelmise töö `job_id` ning
-rakenduse saadetud informatiivne nimetus ja kuupäev.
+rakenduse saadetud informatiivne nimetus ja kuupäev. ERR-i `diarization`-töö
+informatiivne nimetus tuleb parameetrist `media_title`; nimekirjas ei kuvata
+rakenduse sisemist `application_job_id` väärtust. Ajatemplid vormindatakse
+brauseris Eesti lokaadiga.
+
+Haldusvaade näitab iga API-päringu ajal ühtset keerleva rõngaga teadet
+„Andmeid laetakse…”, sealhulgas sisselogimise, järjekorra värskendamise,
+detailvaate avamise ja haldustoimingu ajal. Avaleht ei jää brauseris püsivalt
+vahemällu ning CSS-i ja JavaScripti URL-id on versioonitud päringuparameetriga.
+
+Kui worker claim'ib ORDS-ist töö, kuid ei leia `application_job_id` järgi oma
+aktiivset kohalikku töökonteksti, ei käivita ta protsessi ega jäta tööd
+aktiivsesse olekusse. Worker saadab `complete` tulemusega `INTERRUPTED`,
+`exit_code = 0` ja põhjusega `APPLICATION_OPERATION_NOT_FOUND`; seega jääb
+juhtum haldusvaates auditeeritavaks ning ühine järjekord saab edasi liikuda.
+Vale tehniline identifikaator või töötüüp on seevastu `FAILED`-lõppolekuga
+valideerimisviga. Täpne rakendus- ja workeri API leping on `api.md` jaotises
+5.1.
 
 Toiming lukustab mõjutatud read ja kontrollib nende tegelikku hetkeseisu. Kui toiming ei ole enam lubatud, tagastatakse konflikt ja muudatust ei rakendata.
 
